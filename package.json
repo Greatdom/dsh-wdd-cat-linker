@@ -1,0 +1,27 @@
+{
+  "name": "dsh-wdd-cat-linker",
+  "version": "1.0.0",
+  "description": "A minimal DSH plugin that sends an HTTP request to a given URL every N milliseconds.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js"
+  ],
+  "keywords": [
+    "dsh",
+    "cat",
+    "plugin",
+    "wdd",
+    "linker"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

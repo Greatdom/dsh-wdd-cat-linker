@@ -4,7 +4,23 @@
 #   id      —— 插件在配置树里的唯一标识（改它等于换一个插件实例）
 #   name    —— 包名；宿主据此解析到 package.json 的 main
 #   config  —— 初始配置；留空表示全部走默认值，可在设置/补丁层覆盖
+# - insert:
+#     - id: dsh-wdd-cat-linker
+#       name: 'dsh-wdd-cat-linker'
+#       config: {}
+# 3496409206
 - insert:
     - id: dsh-wdd-cat-linker
       name: 'dsh-wdd-cat-linker'
-      config: {}
+      config:
+        enabled: true
+        catBaseUrl: 'http://127.0.0.1:8080'
+        relayOutbound: true
+        relayInbound: true
+        bindings:
+          - chatType: private
+            chatId: '778005729'
+            target: session
+            sessionId: 'session-67cd9555-f3d0-4ae9-a55f-231fac82d196'
+            label: '测试'
+            enabled: true

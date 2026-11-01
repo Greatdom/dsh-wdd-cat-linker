@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "通到 QQ",
+    "description": "把 DSH 会话接到 QQ：一轮说完发到 QQ，QQ 里的消息带完整身份转进来。业务逻辑在本地 Java 中转站（cat）。"
+  }
+}

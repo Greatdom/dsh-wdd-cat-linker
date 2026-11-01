@@ -1,27 +1,35 @@
 {
   "name": "dsh-wdd-cat-linker",
-  "version": "1.0.0",
-  "description": "A minimal DSH plugin that sends an HTTP request to a given URL every N milliseconds.",
+  "version": "0.1.0",
+  "description": "DSH 与 QQ 之间的跳板：把 DSH 会话的收发接给本地 Java 中转站（cat），业务逻辑全部留在 Java。",
   "type": "module",
-  "main": "index.js",
+  "main": "./index.js",
   "exports": {
-    ".": "./index.js"
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
   },
   "files": [
-    "index.js"
+    "index.js",
+    "src",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
   ],
-  "keywords": [
-    "dsh",
-    "cat",
-    "plugin",
-    "wdd",
-    "linker"
-  ],
-  "license": "MIT",
-  "peerDependencies": {
-    "@deepseek-ai/cordis": "*"
-  },
   "engines": {
     "node": ">=22"
-  }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "qq",
+    "onebot"
+  ],
+  "license": "MIT"
 }

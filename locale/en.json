@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "To QQ",
+    "description": "Bridges a DSH session to QQ: completed turns are sent to QQ, incoming QQ messages arrive with full sender identity. Business logic lives in the local Java relay (cat)."
+  }
+}

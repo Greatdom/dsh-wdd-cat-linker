@@ -1,3 +1,10 @@
+# DSH「通到 QQ」跳板的装配补丁。
+#
+# DSH 加载时会把 bundle 的 cordis.patch.yml 叠加到主配置树上。
+#   id      —— 插件在配置树里的唯一标识（改它等于换一个插件实例）
+#   name    —— 包名；宿主据此解析到 package.json 的 main
+#   config  —— 初始配置；留空表示全部走默认值，可在设置/补丁层覆盖
 - insert:
-    - id: hash
-      name: dsh-plugin-hash-demo
+    - id: dsh-wdd-cat-linker
+      name: 'dsh-wdd-cat-linker'
+      config: {}

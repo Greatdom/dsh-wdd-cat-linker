@@ -21,6 +21,6 @@
           - chatType: private
             chatId: '778005729'
             target: session
-            sessionId: 'session-67cd9555-f3d0-4ae9-a55f-231fac82d196'
+            sessionId: 'ssession-67cd9555-f3d0-4ae9-a55f-231fac82d196'
             label: '测试'
             enabled: true

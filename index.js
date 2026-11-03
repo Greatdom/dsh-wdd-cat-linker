@@ -60,7 +60,7 @@ const BindingSchema = Schema.object({
 
 /** 用户可配置项：只有 DSH 侧的决策，节奏与策略在 Java。 */
 export const Config = Schema.object({
-  enabled: Schema.boolean().default(false).description('总开关。关着 = 完全不收发'),
+  enabled: Schema.boolean().default(true).description('总开关。关着 = 完全不收发'),
   catBaseUrl: Schema.string().default('http://127.0.0.1:8080').description('本地 Java 中转站地址'),
   catToken: Schema.string().default('').description('中转站开了鉴权才填'),
   bindings: Schema.array(BindingSchema).default([]).description('QQ 聊天 → DSH 落点'),
@@ -208,6 +208,7 @@ export function apply(ctx, config) {
    */
   const refreshBindings = async () => {
     const remote = await bridge.get('/api/v1/settings/bindings')
+    log("refreshBindings:"+remote)
     if (!remote || remote.configured !== true) {
       // 页面没配过：用本地 cordis.patch.yml 里写的
       if (bindingsSource !== 'local') {
@@ -219,6 +220,8 @@ export function apply(ctx, config) {
     const next = normalizeBindings(remote.bindings)
     const changed = JSON.stringify(next) !== JSON.stringify(settings.bindings)
     settings.bindings = next
+    log("settings.bindings:"+settings.bindings)
+
     if (bindingsSource !== 'java' || changed) {
       bindingsSource = 'java'
       log(`绑定来源：Java 设置页（${next.length} 条）`)
@@ -241,8 +244,12 @@ export function apply(ctx, config) {
     const chats = []
     for (const binding of settings.bindings) {
       if (binding.enabled === false) continue
+      log("bindingxxxx:"+binding.sessionId+":"+binding.chatId)
       const resolved = resolver.resolveBinding(binding, settings.workspacePick)
-      if (resolved.error) continue
+      if (resolved.error) {
+        log("resolved.error:"+resolved.error)
+        
+        continue}
       chats.push({ chatType: binding.chatType, chatId: binding.chatId })
     }
     return chats
@@ -309,11 +316,15 @@ export function apply(ctx, config) {
     }
 
     const chats = servedChats()
+     log("chats:"+chats)
+
     const payloadChats = chats.length === 0 && settings.enabled && settings.bindings.length > 0
       ? null
       : chats
 
     try {
+    log("payloadChats:"+payloadChats)
+
       await bridge.post('/api/v1/dsh/presence', {
         chats: payloadChats,
         candidates: collectCandidates(),

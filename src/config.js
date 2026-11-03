@@ -19,7 +19,7 @@ export const TARGET_WORKSPACE = 'workspace'
 
 export const DEFAULT_CONFIG = {
   /** 总闸。关着 = 完全不收发，装完不会动你的 QQ。 */
-  enabled: false,
+  enabled: true,
 
   /** Java 中转站地址。 */
   catBaseUrl: 'http://127.0.0.1:8080',

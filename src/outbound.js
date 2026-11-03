@@ -1,19 +1,20 @@
 /**
  * 出站：DSH → Java（再由 Java 发到 QQ）。
  *
- * 触发时机只有两个事件：
- *   · `assistant/message` —— 模型说了一句。这里**只攒不发**：
- *     一轮里模型可能输出多次、也可能只发图不发字，所以要能合并。
- *   · `turn/end`          —— 一轮结束。只有 `reason.kind === 'completed'` 才算「真说完了」。
+ * 只响应两个事件：
+ *   · `assistant/message` —— 模型说了一段，**只攒不发**（一轮里可能说多次）；
+ *   · `turn/end`          —— 一轮结束，且 `reason.kind === 'completed'` 才发。
  *
- * 为什么必须等 turn/end：一轮中间可能夹着工具调用、失败的尝试、被中断的输出。
- * 只发「整轮正常完成时的最后一句」才符合「它说完一整轮就发到 QQ」的语义；
- * 被中断/报错的一轮一个字都不发。
+ * 为什么必须等 turn/end：一轮中间可能夹着工具调用、失败重试、被中断的输出。
+ * 只发「整轮正常完成时的内容」才符合语义；被中断的一轮一个字都不发。
  *
- * 拆段、限流、@ 等节奏控制全部交给 Java —— 这里是纯搬运。
+ * 拆段、限流、@ 等节奏控制全在 Java —— 这里是纯搬运。
  */
 
+import { API } from './api.js'
+import { MAX_IMAGES_PER_TURN, SENT_TURNS_LIMIT, SUMMARY_LEN } from './constants.js'
 import { chatKeyOf } from './config.js'
+import { SESSION_EVENT, TURN_REASON } from './events.js'
 import {
   extractAttachmentImages,
   extractInlineImages,
@@ -21,9 +22,9 @@ import {
   resolveLocalPath,
   summarize,
 } from './media.js'
-import { sessionKey } from './resolver.js'
+import { sessionKey } from './session-id.js'
 
-/** 这一轮攒到的内容。按会话分开存，避免两个会话同时说话时串台。 */
+/** 一轮攒到的内容。按会话分开存，避免两个会话同时说话时串台。 */
 function emptyDraft() {
   return { turn: -1, text: '', images: [] }
 }
@@ -34,10 +35,10 @@ export class Outbound {
    * @param {() => object} deps.getConfig
    * @param {import('./resolver.js').SessionResolver} deps.resolver
    * @param {import('./bridge.js').Bridge} deps.bridge
-   * @param {(text: string) => void} deps.log
+   * @param {(text: string, meta?: object) => void} deps.log
    * @param {Function} [deps.attachmentsService] 取 DSH attachments 服务
    * @param {(attachmentId: string) => string} [deps.resolveOriginal]
-   *        查「附件 id → 我们自己留的原图路径」，用于保住 GIF（DSH 存图可能重编码成静态图）
+   *        查「附件 id → 我们自己留的原图路径」，用于保住 GIF
    */
   constructor(deps) {
     this.getConfig = deps.getConfig
@@ -49,11 +50,11 @@ export class Outbound {
 
     /** @type {Map<string, {turn:number, text:string, images:object[]}>} 会话键 → 本轮草稿 */
     this.drafts = new Map()
-    /** @type {Set<string>} 已成功上报的「会话键:轮号」，防重复 */
-    this.sentTurns = new Set()
+    /** @type {Map<string, true>} 已上报的「会话键:轮号」，防重复。Map 保插入顺序，便于 FIFO 淘汰。 */
+    this.sentTurns = new Map()
   }
 
-  /** 统一事件入口，由 index.js 挂到 ctx.on('session/event')。 */
+  /** 事件入口，由 index.js 挂到 ctx.on('session/event')。 */
   handleSessionEvent(session, event) {
     const config = this.getConfig()
     if (!config.enabled || !config.relayOutbound) return
@@ -63,20 +64,20 @@ export class Outbound {
     if (!sessionId) return
     const key = sessionKey(sessionId)
 
-    if (event && event.type === 'assistant/message') {
+    if (event && event.type === SESSION_EVENT.assistantMessage) {
       this.#collect(key, event.data || {})
       return
     }
-    if (event && event.type === 'turn/end') {
+    if (event && event.type === SESSION_EVENT.turnEnd) {
       void this.#finishTurn(sessionId, event.data || {}, config)
     }
   }
 
-  /** 攒住这一轮的正文和图片（只攒，不发）。 */
+  /** 攒住这一轮的正文和图片。 */
   #collect(key, data) {
     const draft = this.drafts.get(key) || emptyDraft()
 
-    // 被中断的一次输出不算数 —— 清掉
+    // 被中断的一次输出不算数
     if (data.interrupted) {
       this.drafts.set(key, emptyDraft())
       return
@@ -84,19 +85,19 @@ export class Outbound {
 
     const turn = Number(data.turn)
     const text = extractText(data.message)
-    const images = extractAttachmentImages(data.message, 9)
+    const images = extractAttachmentImages(data.message, MAX_IMAGES_PER_TURN)
 
     if (text) {
       this.drafts.set(key, { turn, text, images })
       return
     }
-    // 只发图、没发字：把图并进同一轮的正文里，别把图丢了
+    // 只发图没发字：把图并进同一轮，别丢
     if (images.length) {
       const sameTurn = draft.turn === turn
       this.drafts.set(key, {
         turn,
         text: sameTurn ? draft.text : '',
-        images: (sameTurn ? draft.images : []).concat(images).slice(0, 9),
+        images: (sameTurn ? draft.images : []).concat(images).slice(0, MAX_IMAGES_PER_TURN),
       })
     }
   }
@@ -106,40 +107,46 @@ export class Outbound {
     const key = sessionKey(sessionId)
     const draft = this.drafts.get(key) || emptyDraft()
     const turn = Number(data.turn)
-    const completed = Boolean(data.reason && data.reason.kind === 'completed')
+    const completed = Boolean(data.reason && data.reason.kind === TURN_REASON.completed)
     const hasContent = Boolean(draft.text) || draft.images.length > 0
 
-    // 发完就清空，不论成功失败 —— 下一轮重新攒
+    // 不论成败都清空，下一轮重新攒
     this.drafts.set(key, emptyDraft())
 
-    if (!completed) return
-    if (draft.turn !== turn) return
-    if (!hasContent) return
+    if (!completed || draft.turn !== turn || !hasContent) return
 
-    // 反查：这间会话绑了哪些 QQ 聊天
     const targets = this.resolver.bindingsForSession(sessionId, config.bindings, config.workspacePick)
-    if (!targets.length) return   // 很常见：这间会话没绑定任何聊天
+    if (!targets.length) return   // 很常见：这间会话没绑任何聊天
 
-    // 去重键必须是「会话 + 轮号」。只用轮号的话，换过会话后轮号撞上会静默漏发。
-    const turnKey = key + ':' + turn
+    // 去重键必须是「会话 + 轮号」：只用轮号的话，换会话后号码撞上会静默漏发
+    const turnKey = `${key}:${turn}`
     if (this.sentTurns.has(turnKey)) return
 
     const payload = this.#buildPayload(draft, targets, sessionId, turn)
 
     try {
-      await this.bridge.post('/api/v1/dsh/events', payload)
-      // 只在 Java 受理之后才记「发过了」。受理=202，真正的发送与限流在 Java 侧，
-      // 这里若重试会造成重复发送，所以不重试。
-      this.sentTurns.add(turnKey)
-      if (this.sentTurns.size > 500) this.sentTurns.clear()
-      this.log(`发出 → ${payload.chatKeys.join(', ')}：${summarize(draft.text)}`
+      await this.bridge.post(API.events, payload)
+      // 只在 Java 受理后才记「发过了」。受理即 202，真正的发送与限流在 Java，
+      // 这里重试会造成重复发送，所以不重试。
+      this.#rememberTurn(turnKey)
+      this.log(`发出 → ${payload.chatKeys.join(', ')}：${summarize(draft.text, SUMMARY_LEN)}`
         + (payload.images.length ? `（${payload.images.length} 张图）` : ''))
     } catch (error) {
       this.log(`上报给中转站失败（这一轮不重发）：${String((error && error.message) || error)}`)
     }
   }
 
-  /** 组装发给 Java 的载荷：干净正文 + 图片引用（url / 本机绝对路径）。 */
+  /** FIFO 淘汰。整表 clear() 会丢掉全部去重记录，之后轮号撞上就重复发。 */
+  #rememberTurn(turnKey) {
+    this.sentTurns.set(turnKey, true)
+    while (this.sentTurns.size > SENT_TURNS_LIMIT) {
+      const oldest = this.sentTurns.keys().next().value
+      if (oldest === undefined) break
+      this.sentTurns.delete(oldest)
+    }
+  }
+
+  /** 组装载荷：干净正文 + 图片引用（url / 本机绝对路径）。 */
   #buildPayload(draft, targets, sessionId, turn) {
     const roots = this.resolver.rootsForSession(sessionId)
     const inline = extractInlineImages(draft.text)
@@ -159,7 +166,7 @@ export class Outbound {
       }
     }
 
-    // ② 附件块：优先换回我们自己留的原图（GIF 不退化），否则用 DSH 的宿主路径
+    // ② 附件块：优先换回我们自己留的原图（GIF 不退化），否则用 DSH 宿主路径
     const service = this.attachmentsService?.()
     for (const block of draft.images) {
       const attachmentId = String((block && block.attachment && block.attachment.attachmentId) || '')
@@ -171,9 +178,7 @@ export class Outbound {
           // ignore
         }
       }
-      if (path) {
-        images.push({ kind: 'path', value: path })
-      }
+      if (path) images.push({ kind: 'path', value: path })
     }
 
     return {

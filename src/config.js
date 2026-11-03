@@ -1,14 +1,11 @@
 /**
- * 配置模型 —— 跳板侧唯一的「数据契约」。
+ * 配置模型 —— 跳板侧唯一的数据契约。
  *
- * 这里**只放 DSH 侧的决策**：哪条 QQ 聊天对应哪间会话/工作区。
- * 因为只有 DSH 知道哪间会话还活着、工作区里哪间最近有活动。
+ * 只放 **DSH 侧的决策**：哪条 QQ 聊天对应哪间会话或工作区。
+ * 节奏、限流、拆段、图片大小、人设等「怎么回」的策略全在 Java
+ * （见 cat/src/main/resources/application.yml），改它们不必动这里。
  *
- * 节奏、限流、拆段、图片大小、人设等一切「怎么回」的策略都在 Java 侧
- * （见 cat/src/main/resources/application.yml），改它们不需要动这个文件。
- *
- * 所有函数都做「脏输入 → 干净输出」：调用方可以无条件信任字段类型，
- * 不必到处写 `?? 默认值`。
+ * 所有函数都做「脏输入 → 干净输出」，调用方可以无条件信任字段类型。
  */
 
 export const CHAT_PRIVATE = 'private'
@@ -19,7 +16,7 @@ export const TARGET_WORKSPACE = 'workspace'
 
 export const DEFAULT_CONFIG = {
   /** 总闸。关着 = 完全不收发，装完不会动你的 QQ。 */
-  enabled: true,
+  enabled: false,
 
   /** Java 中转站地址。 */
   catBaseUrl: 'http://127.0.0.1:8080',
@@ -96,11 +93,16 @@ export function normalizeBinding(raw) {
   }
 }
 
+/** 绑定的唯一键，与 Java 侧 ChatKey 的线上格式一致。 */
+export function chatKeyOf(binding) {
+  return binding.chatType + ':' + binding.chatId
+}
+
 /**
  * 规整整个绑定表。
  *
- * 规则：同一个聊天（chatType + chatId）只能绑一条 —— 两条会互相抢消息。
- * 重复的保留第一条，后面的丢掉（不报错，日志里会显示实际条数）。
+ * 同一个聊天（chatType + chatId）只能绑一条——两条会互相抢消息。
+ * 重复的保留第一条，后面的丢掉，不报错。
  */
 export function normalizeBindings(raw) {
   const out = []
@@ -109,17 +111,12 @@ export function normalizeBindings(raw) {
   for (const item of raw.slice(0, 50)) {
     const binding = normalizeBinding(item)
     if (!binding) continue
-    const key = binding.chatType + ':' + binding.chatId
+    const key = chatKeyOf(binding)
     if (seen.has(key)) continue
     seen.add(key)
     out.push(binding)
   }
   return out
-}
-
-/** 绑定的唯一键，与 Java 侧 ChatKey 的线上格式一致。 */
-export function chatKeyOf(binding) {
-  return binding.chatType + ':' + binding.chatId
 }
 
 /** 归一化整份配置。输入可以是任何东西，输出保证干净可用。 */

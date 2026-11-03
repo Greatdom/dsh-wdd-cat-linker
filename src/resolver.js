@@ -1,85 +1,49 @@
 /**
- * 落点解析：把一条绑定变成「一间活着的会话」。
+ * 会话与 agent 解析：绑定 → 一间会话 + 它的 agent。
  *
- * 为什么这段必须留在 JS：只有 DSH 知道哪间会话现在有活着的 agent、
- * 哪些会话已归档、某个工作区里哪间最近有活动。Java 不该知道这些，
- * 所以它只接收「这些聊天我现在负责」的结论（presence）。
+ * 为什么这段必须在 JS：只有 DSH 知道哪间会话有活 agent、哪些已归档、
+ * 工作区里哪间最近有活动。Java 只接收结论（presence），不需要知道这些。
  *
- * 两种绑定：
- *   · target='session'   —— 直接给 sessionId，最可控，但换会话要改配置；
- *   · target='workspace' —— 只给 workspaceId，由这里自己挑一间（默认挑最近有活动的）。
- *
- * ⚠ 会话 id 有 `xxx` 和 `session-xxx` 两种写法，所有比较都必须先过 {@link sessionKey}，
- *   否则会静默失败（列表里有、就是匹配不上）。
+ * 工作区相关的查询委托给 {@link WorkspaceIndex}；本文件只管会话本身与 agent 生命周期。
  */
 
-/** 会话 id 归一化：去掉 `session-` 前缀。 */
-export function sessionKey(id) {
-  const s = String(id == null ? '' : id).trim()
-  return s.startsWith('session-') ? s.slice('session-'.length) : s
-}
-
-/** 判断两个会话 id 是不是同一间（无视前缀差异）。 */
-export function sameSession(a, b) {
-  return sessionKey(a) !== '' && sessionKey(a) === sessionKey(b)
-}
+import { WorkspaceIndex } from './workspace.js'
+import { idVariants, sameSession, sessionKey, shortId } from './session-id.js'
 
 export class SessionResolver {
   /** @param {object} ctx cordis 上下文 */
   constructor(ctx) {
     this.ctx = ctx
+    /** 取到的服务做缓存：它们在插件生命周期内不会变。 */
+    this.services = new Map()
+
+    this.workspace = new WorkspaceIndex({
+      ctx,
+      service: (name) => this.#service(name),
+      findAgent: (id) => this.findAgent(id),
+      liveSessionIds: () => this.liveSessionIds(),
+    })
   }
 
-  /**
-   * 兼容多种取服务写法（不同 DSH 版本 `ctx.get` 与直接属性都出现过）。
-   * @returns {any}
-   */
+  /** 兼容 ctx.get(name) 与 ctx[name] 两种写法。 */
   #service(name) {
+    if (this.services.has(name)) return this.services.get(name)
+
+    let value
     try {
-      const viaGet = this.ctx.get?.(name)
-      if (viaGet !== undefined && viaGet !== null) return viaGet
+      value = this.ctx.get?.(name)
     } catch {
-      // 落到下面直接取属性
+      value = undefined
     }
-    return this.ctx[name]
+    if (value === undefined || value === null) value = this.ctx[name]
+
+    this.services.set(name, value)
+    return value
   }
 
-  /** 全部工作区。 */
-  listWorkspaces() {
-    const registry = this.#service('workspaceRegistry')
-    if (!registry || typeof registry.list !== 'function') return []
-    try {
-      return (registry.list() || []).map((ws) => ({
-        id: String(ws.id || ''),
-        title: String(ws.title || ''),
-        path: String(ws.path || ''),
-        sessionIds: Array.isArray(ws.sessionIds) ? ws.sessionIds.map(String) : [],
-      }))
-    } catch {
-      return []
-    }
-  }
+  // ─────────────────────────── agent ───────────────────────────
 
-  /**
-   * 已归档的会话键集合。
-   * ⚠ 在 DSH 里 `archivedSessionIds` 是**方法**而不是属性；两种形态都兼容，方法优先。
-   */
-  archivedSessionKeys() {
-    const out = new Set()
-    const registry = this.#service('workspaceRegistry')
-    if (!registry) return out
-    try {
-      const value = typeof registry.archivedSessionIds === 'function'
-        ? registry.archivedSessionIds()
-        : registry.archivedSessionIds
-      for (const id of value || []) out.add(sessionKey(id))
-    } catch {
-      // 拿不到就当没有归档
-    }
-    return out
-  }
-
-  /** 当前活着的会话 id。 */
+  /** 当前有活 agent 的会话 id。 */
   liveSessionIds() {
     const agents = this.#service('agents')
     if (!agents || typeof agents.list !== 'function') return []
@@ -94,8 +58,8 @@ export class SessionResolver {
   }
 
   /**
-   * 找一间会话「活着的 agent」。两种 id 写法都试。
-   * @returns {object|undefined} 拿不到说明那间会话当前没开着
+   * 只查内存里的 agent，两种 id 写法都试。**不触发恢复。**
+   * @returns {object|undefined}
    */
   findAgent(sessionId) {
     const raw = String(sessionId == null ? '' : sessionId).trim()
@@ -103,10 +67,7 @@ export class SessionResolver {
     const agents = this.#service('agents')
     if (!agents || typeof agents.get !== 'function') return undefined
 
-    const candidates = raw.startsWith('session-')
-      ? [raw, raw.slice('session-'.length)]
-      : [raw, 'session-' + raw]
-    for (const id of candidates) {
+    for (const id of idVariants(raw)) {
       try {
         const agent = agents.get(id)
         if (agent !== undefined && agent !== null) return agent
@@ -118,45 +79,60 @@ export class SessionResolver {
   }
 
   /**
-   * 拿到「活着的 agent」，没有就从磁盘恢复。
+   * 拿 agent；内存里没有就从磁盘恢复。
    *
-   * <p>为什么需要它：`agents.get(id)` 查的是**内存里有没有常驻的 agent 实例**，
-   * 而 DSH 的 agent 是按需创建、用完可能回收的。所以「你还能在 UI 里和这个会话聊天」
-   * 和「agents.get() 查得到」根本不是一回事——会话文件在磁盘上好好的，
-   * 但内存里没有 agent，`get()` 就返回 undefined。
+   * 为什么需要它：`agents.get()` 查的是**内存里有没有常驻实例**，而 agent
+   * 是按需创建、用完可能回收的。所以「UI 里还打得开这个会话」与
+   * 「agents.get() 查得到」不是一回事——会话文件好好的，内存里却没有 agent。
    *
-   * <p>正确做法是走 `sessionController.agents.resolveAgent(id)`：
-   * 它「解析或恢复，并发去重」，是 DSH 给普通会话准备的官方入口。
-   * 直接调 `agents.resume()` 不行——那需要 `agentOptions` + `setup` 闭包，
-   * 只有 session-controller 内部才拿得到。
+   * 走 `sessionController.agents.resolveAgent()` 而不是 `agents.resume()`：
+   * 后者需要 agentOptions + setup 闭包，只有 session-controller 内部拿得到。
    *
-   * @returns {Promise<object|undefined>} agent 实例；恢不到返回 undefined
+   * @returns {Promise<object|undefined>}
    */
-  async resolveAgentAsync(sessionId) {
+  async resumeAgent(sessionId) {
     const raw = String(sessionId == null ? '' : sessionId).trim()
     if (!raw) return undefined
 
-    // 先查内存，省掉一次不必要的恢复
     const cached = this.findAgent(raw)
     if (cached) return cached
 
     const controller = this.#service('sessionController')
     const resolver = controller && controller.agents
-    if (!resolver || typeof resolver.resolveAgent !== 'function') {
-      // 宿主没提供（老版本 DSH，或这个插件跑在非宿主进程里）
-      return undefined
-    }
+    if (!resolver || typeof resolver.resolveAgent !== 'function') return undefined
 
     try {
       const found = await resolver.resolveAgent(raw)
       if (found && !found.error && found.agent) return found.agent
     } catch {
-      // 会话不存在、被归档、或恢复失败——都当作「拿不到」
+      // 会话不存在、已归档、或恢复失败，一律当作拿不到
     }
     return undefined
   }
 
-  /** 会话显示名（日志/排查用）。 */
+  // ─────────────────────────── 查询入口 ───────────────────────────
+
+  /** 归档 + 活会话快照，供工作区挑选复用。 */
+  snapshotSessions() {
+    return this.workspace.snapshot(this.liveSessionIds())
+  }
+
+  /** 全部工作区（字段已规整）。 */
+  listWorkspaces() {
+    return this.workspace.list()
+  }
+
+  /** 已归档的会话键集合。转发给 workspace，保持调用方只看 resolver 一个门面。 */
+  archivedSessionKeys() {
+    return this.workspace.archivedKeys()
+  }
+
+  /** 在工作区里挑一间会话，不恢复。 */
+  pickSessionInWorkspace(workspaceId, pick = 'recent', snapshot) {
+    return this.workspace.pickSession(workspaceId, pick, snapshot || this.snapshotSessions())
+  }
+
+  /** 会话显示名（日志用）。 */
   sessionTitle(sessionId) {
     try {
       const service = this.#service('sessionTitle')
@@ -168,107 +144,65 @@ export class SessionResolver {
       // ignore
     }
     const key = sessionKey(sessionId)
-    return key ? '…' + key.slice(-8) : '（未设置）'
+    return key ? '…' + shortId(key) : '（未设置）'
   }
 
-  /**
-   * 在工作区里挑一间会话。
-   *
-   * @param {string} workspaceId
-   * @param {'recent'|'first'} pick
-   * @returns {{sessionId: string, reason: string}|null}
-   */
-  pickSessionInWorkspace(workspaceId, pick = 'recent') {
-    const registry = this.#service('workspaceRegistry')
-    if (!registry || typeof registry.get !== 'function') return null
-
-    let workspace
-    try {
-      workspace = registry.get(workspaceId)
-    } catch {
-      return null
-    }
-    if (!workspace) return null
-
-    const archived = this.archivedSessionKeys()
-    const live = new Set(this.liveSessionIds().map(sessionKey))
-    const sessionIds = Array.isArray(workspace.sessionIds) ? workspace.sessionIds.map(String) : []
-
-    // 候选：工作区名下、没归档、且当下确实有 agent
-    let candidates = sessionIds
-      .filter((id) => !archived.has(sessionKey(id)))
-      .filter((id) => live.has(sessionKey(id)))
-
-    if (!candidates.length) {
-      // 退一步：有些工作区的 sessionIds 可能还没同步，只要有活 agent 就收
-      candidates = sessionIds.filter((id) => this.findAgent(id))
-    }
-    if (!candidates.length) return null
-
-    if (pick === 'first') {
-      return { sessionId: candidates[0], reason: 'workspace:first' }
-    }
-
-    // recent：能拿到活动时间就用；拿不到按顺序取最后（越靠后一般越新）
-    const sessions = this.#service('sessions')
-    const activityOf = (id) => {
-      try {
-        if (sessions && typeof sessions.get === 'function') {
-          const s = sessions.get(id) || sessions.get(sessionKey(id))
-          if (s) {
-            const stamp = s.updatedAt || s.lastActivityAt || s.lastActivity || 0
-            if (typeof stamp === 'number' && stamp > 0) return stamp
-            if (stamp instanceof Date) return stamp.getTime()
-          }
-        }
-      } catch {
-        // ignore
-      }
-      return 0
-    }
-
-    const scored = candidates.map((id, index) => ({ id, index, at: activityOf(id) }))
-    scored.sort((a, b) => (b.at !== a.at ? b.at - a.at : b.index - a.index))
-    return { sessionId: scored[0].id, reason: 'workspace:recent' }
-  }
+  // ─────────────────────────── 统一解析入口 ───────────────────────────
 
   /**
-   * 把一条绑定解析成「哪一间会话」。入站投递和出站反查都用它。
+   * 把绑定解析成 `{ sessionId, agent, reason }` 或 `{ error }`。
    *
-   * @returns {{sessionId: string, reason: string} | {error: string}}
+   * 这是**唯一**的解析入口。`resume` 决定「内存里没有 agent 时要不要从磁盘恢复」：
+   *   · `false`（默认）—— 只查内存。心跳走这条，绝不触发恢复，
+   *     否则每 5 秒一次心跳会把 DSH 拖慢；
+   *   · `true`  —— 查不到就恢复。只有真正要投递消息时才用。
+   *
+   * @param {object} binding
+   * @param {{pick?: 'recent'|'first', resume?: boolean, snapshot?: object}} [options]
+   * @returns {Promise<{sessionId: string, agent: object|undefined, reason: string} | {error: string}>}
    */
-  async resolveBinding(binding, pick = 'recent') {
+  async resolveTarget(binding, options = {}) {
     if (!binding) return { error: '绑定为空' }
+    const { pick = 'recent', resume = false, snapshot } = options
 
     if (binding.target === 'session') {
-      const agent = await this.resolveAgentAsync(binding.sessionId)
-      if (!agent) {
-        return { error: `会话 …${sessionKey(binding.sessionId).slice(-8)} 打不开（可能已被归档或删掉）` }
-      }
-      return { sessionId: binding.sessionId, reason: 'session' }
+      const raw = String(binding.sessionId || '').trim()
+      if (!raw) return { error: '绑定里没填 sessionId' }
+      return this.#withAgent(raw, 'session', resume)
     }
-    // if (binding.target === 'session') {
-    //   if (!this.findAgent(binding.sessionId)) {
-    //     if(!this.resolveAgentAsync(binding.sessionId))
-    //     return { error: `会话 …${sessionKey(binding.sessionId).slice(-8)} 没开着（先去 DSH 里打开它）` }
-    //   }
-    //   return { sessionId: binding.sessionId, reason: 'session' }
-    // }
+
     if (binding.target === 'workspace') {
-      const picked = this.pickSessionInWorkspace(binding.workspaceId, pick)
+      const picked = this.pickSessionInWorkspace(binding.workspaceId, pick, snapshot)
       if (!picked) {
-        return { error: `工作区 …${String(binding.workspaceId).slice(-8)} 里没有活着的会话` }
+        return { error: `工作区 …${this.workspace.shortId(binding.workspaceId)} 里没有活着的会话` }
       }
-      return picked
+      return this.#withAgent(picked.sessionId, picked.reason, resume)
     }
+
     return { error: `未知的 target：${binding.target}` }
   }
 
+  /** 取 agent（必要时恢复）并组装结果；拿不到就给 error。 */
+  async #withAgent(sessionId, reason, resume) {
+    const agent = resume ? await this.resumeAgent(sessionId) : this.findAgent(sessionId)
+    if (!agent) {
+      return {
+        error: resume
+          ? `会话 …${shortId(sessionId)} 打不开（可能已被归档或删掉）`
+          : `会话 …${shortId(sessionId)} 现在没有活着的 agent`,
+      }
+    }
+    return { sessionId, agent, reason }
+  }
+
+  // ─────────────────────────── 反查与路径 ───────────────────────────
+
   /**
-   * 反查：这间会话说的话，该发回哪些 QQ 聊天？
-   * （同一间会话可以绑多个聊天，比如私聊 + 一个群。）
+   * 反查：这间会话说的话该发回哪些 QQ 聊天。
+   * 同一间会话可以绑多个聊天（比如私聊 + 一个群）。
    */
   bindingsForSession(sessionIdToFind, bindings, pick = 'recent') {
+    const snapshot = this.snapshotSessions()
     const result = []
     for (const binding of bindings) {
       if (binding.enabled === false) continue
@@ -276,33 +210,16 @@ export class SessionResolver {
       if (binding.target === 'session') {
         mappedId = binding.sessionId
       } else {
-        const picked = this.pickSessionInWorkspace(binding.workspaceId, pick)
+        const picked = this.workspace.pickSession(binding.workspaceId, pick, snapshot)
         mappedId = picked ? picked.sessionId : ''
       }
-      if (!mappedId) continue
-      if (sameSession(mappedId, sessionIdToFind)) result.push(binding)
+      if (mappedId && sameSession(mappedId, sessionIdToFind)) result.push(binding)
     }
     return result
   }
 
-  /**
-   * 解析相对路径的根目录：先看会话所在工作区，再退到进程当前目录。
-   * （模型回复里的 markdown 图片大多是相对工作区的路径。）
-   */
+  /** 解析相对路径的根目录：会话所在工作区优先，再退到进程当前目录。 */
   rootsForSession(sessionId) {
-    const roots = []
-    try {
-      const key = sessionKey(sessionId)
-      for (const ws of this.listWorkspaces()) {
-        if (ws.sessionIds.some((id) => sessionKey(id) === key)) {
-          if (ws.path) roots.push(ws.path)
-          break
-        }
-      }
-    } catch {
-      // ignore
-    }
-    if (typeof process !== 'undefined' && process.cwd) roots.push(process.cwd())
-    return roots
+    return this.workspace.rootsForSession(sessionId)
   }
 }

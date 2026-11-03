@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     把插件源码同步到 DSH 的安装目录，并做一致性校验。
 
@@ -35,20 +35,27 @@ $Source = 'E:\程序代码\dsh\dsh-wdd-cat-linker'
 $Target = 'D:\dsh\workspace\profiles\desktop\node_modules\dsh-wdd-cat-linker'
 
 # 要同步的文件清单（相对路径）。
-# 刻意不含 package-lock.json / test / .git —— 那些是安装时生成的，覆盖会出问题。
-$Files = @(
+#
+# 顶层固定项 + 自动扫描 src/*.js。
+# 之所以扫描而不写死：以前这份清单是手写的，新增模块后忘了加，
+# 同步「成功」但新文件根本没过去，DSH 加载时会报模块不存在。
+$FixedFiles = @(
     'index.js',
     'cordis.patch.yml',
     'icon.svg',
     'locale/en.json',
-    'locale/zh.json',
-    'src/bridge.js',
-    'src/config.js',
-    'src/inbound.js',
-    'src/media.js',
-    'src/outbound.js',
-    'src/resolver.js'
+    'locale/zh.json'
 )
+
+$SrcJs = @()
+$srcDir = Join-Path $Source 'src'
+if (Test-Path -LiteralPath $srcDir) {
+    $SrcJs = Get-ChildItem -LiteralPath $srcDir -Filter '*.js' -File |
+        Sort-Object Name |
+        ForEach-Object { 'src/' + $_.Name }
+}
+
+$Files = $FixedFiles + $SrcJs
 
 # ⚠ package.json 刻意**不同步**。
 #   pnpm 安装时会往安装目录那份里写 dependencies（例如 @deepseek-ai/schemastery），

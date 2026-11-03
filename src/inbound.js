@@ -1,26 +1,25 @@
 /**
  * 入站：Java → DSH。
  *
- * 一轮 poll 做这些事：
- *   1. 从 Java 取待投递队列（那些「QQ 里有人说了话」的消息）；
- *   2. 按 chatKey 找到绑定 → 解析到一间活着的会话 → 取它的 agent；
- *   3. 把正文包成 text 块，把图片交给 DSH 附件服务准入；
+ * 一轮轮询做这些事：
+ *   1. 从 Java 取待投递队列；
+ *   2. 按 chatKey 找绑定 → 解析到一间会话（agent 不在内存里就恢复）；
+ *   3. 正文包成 text 块，图片交给 DSH 附件服务准入；
  *   4. `agent.followup()` 投进会话；
- *   5. **只有投递成功才 ack** —— ack 是 Java 侧推进水位的唯一依据。
+ *   5. **只有投递成功才 ack**。
  *
- * 为什么「投递成功才 ack」这么重要：ack 会让 Java 认为这条消息已处理并从队列移除。
- * 若先 ack 后投递，一旦投递失败（会话没开 / agent 已释放），这条消息就永久丢失。
- * 反过来只是「下一轮重试」，最坏慢 1.5 秒。
+ * 为什么「投递成功才 ack」：ack 会让 Java 把消息从队列移除。先 ack 后投递，
+ * 一旦投递失败这条消息就永久丢失；反过来只是下一轮重试，最坏慢一个轮询间隔。
  */
 
+import { API } from './api.js'
+import {
+  DELIVERY_SUMMARY_LEN,
+  ORIGINAL_MAP_LIMIT,
+  OUTBOX_PAGE_SIZE,
+} from './constants.js'
 import { extensionOfMime, readAsBase64, summarize } from './media.js'
-import { sessionKey } from './resolver.js'
-
-/** 一次最多取多少条待投递消息。 */
-const OUTBOX_PAGE_SIZE = 20
-
-/** 「附件 id → 我们自己留的原图路径」内存映射上限。 */
-const ORIGINAL_MAP_LIMIT = 200
+import { shortId } from './session-id.js'
 
 export class Inbound {
   /**
@@ -28,39 +27,26 @@ export class Inbound {
    * @param {() => object} deps.getConfig
    * @param {import('./resolver.js').SessionResolver} deps.resolver
    * @param {import('./bridge.js').Bridge} deps.bridge
-   * @param {(text: string) => void} deps.log
+   * @param {(text: string, meta?: object) => void} deps.log
    * @param {Function} [deps.attachmentsService]
    */
   constructor(deps) {
     this.getConfig = deps.getConfig
     this.resolver = deps.resolver
     this.bridge = deps.bridge
-    /**
-     * 记账。可选第二参数 { level, itemId }。
-     * 默认由 index.js 注入的那个实现负责写内存缓冲 + 宿主 logger。
-     */
     this.log = deps.log
-    /**
-     * 在某个 itemId 上下文里执行 —— 让这段代码里打的日志都带上同一个 id。
-     * 由 index.js 提供（它持有「当前 itemId」的状态）；缺失时退化为直接执行。
-     */
-    this.withItemId = deps.withItemId
     this.attachmentsService = deps.attachmentsService
 
-    /** 正在跑的 poll（single-flight 用）。 */
+    /** 正在跑的轮询（single-flight 用）。 */
     this.running = null
-    /** 插件卸载标记。 */
     this.stopped = false
 
-    /**
-     * @type {Map<string, string>} DSH 附件 id → Java 存的原图路径。
-     * 回发同一张图时优先用它，GIF 不会因为 DSH 的重编码变成静态图。
-     */
+    /** @type {Map<string, string>} DSH 附件 id → Java 存的原图路径，回发时保住 GIF。 */
     this.originalByAttachment = new Map()
   }
 
   /**
-   * 心跳入口。single-flight：上一次没跑完就直接复用它的 Promise，不叠加。
+   * 轮询入口。single-flight：上一轮没跑完就复用它的 Promise，不叠加——
    * 否则同一条消息可能被两轮同时读到并投递两次（followup 不可撤回）。
    */
   tick() {
@@ -80,7 +66,7 @@ export class Inbound {
     const config = this.getConfig()
     if (!config.enabled || !config.relayInbound) return
 
-    const page = await this.bridge.get(`/api/v1/dsh/outbox?limit=${OUTBOX_PAGE_SIZE}`)
+    const page = await this.bridge.get(API.outbox(OUTBOX_PAGE_SIZE))
     const messages = Array.isArray(page && page.messages) ? page.messages : []
     if (!messages.length) return
 
@@ -94,12 +80,12 @@ export class Inbound {
         this.log(`投递 ${message && message.id} 出错：${String((error && error.message) || error)}`)
         outcome = false
       }
-      // true = 已投递；'drop' = 已经没有绑定，ack 掉避免无限积压；false = 留待下一轮
+      // true = 已投递；'drop' = 已无绑定，ack 掉避免无限积压；false = 留待下一轮
       if (outcome === true || outcome === 'drop') acked.push(message.id)
     }
 
     if (acked.length) {
-      await this.bridge.post('/api/v1/dsh/ack', { ids: acked })
+      await this.bridge.post(API.ack, { ids: acked })
     }
   }
 
@@ -107,7 +93,7 @@ export class Inbound {
    * 投一条消息。
    *
    * @returns {Promise<true|'drop'|false>}
-   *   true 已投递；'drop' 无绑定该丢弃（要 ack）；false 暂时投不出去（不要 ack）
+   *   true 已投递；'drop' 该丢弃（要 ack）；false 暂投不出去（不要 ack）
    */
   async #deliver(message, config) {
     if (!message || !message.id) return 'drop'
@@ -121,15 +107,20 @@ export class Inbound {
       return 'drop'
     }
 
-    const resolved = await this.resolver.resolveBinding(binding, config.workspacePick)
+    // resume: true —— 真正的投递才值得付出「从磁盘恢复会话」的代价。
+    // 解析结果里已经带上了 agent，不要再去 findAgent 查一遍。
+    const resolved = await this.resolver.resolveTarget(binding, {
+      pick: config.workspacePick,
+      resume: true,
+    })
     if (resolved.error) {
       this.log(`${chatKey}：${resolved.error}（留待下一轮）`)
       return false
     }
 
-      const agent = this.resolver.findAgent(resolved.sessionId) || await this.resolver.resolveAgentAsync(resolved.sessionId)
+    const { agent, sessionId } = resolved
     if (!agent || typeof agent.followup !== 'function') {
-      this.log(`${chatKey}：会话 …${sessionKey(resolved.sessionId).slice(-8)} 现在没活着（留待下一轮）`)
+      this.log(`${chatKey}：会话 …${shortId(sessionId)} 拿不到 followup（留待下一轮）`)
       return false
     }
 
@@ -138,37 +129,29 @@ export class Inbound {
       id: `qq-${message.id}`,
       role: 'user',
       content,
-      // ⚠ source.kind 在 DSH 里是封闭枚举，没有 'qq'。
-      //   用 'user' 表示「这是一条用户输入」（UI 会正常当作人说的话渲染），
-      //   额外的 `qq` 字段承载结构化身份，供二次开发直接读，不必解析正文。
+      // source.kind 是封闭枚举，没有 'qq'。用 'user' 让 UI 当人话渲染，
+      // 结构化身份单独放在 qq 字段里，二次开发不必解析正文。
       source: { kind: 'user', qq: message.identity || null },
     }
 
-    // 用 Java 侧的 itemId 作为串联标识：这条消息相关的所有日志都带它，
-    // /logs 页面上就能和 Java 侧的行按同一 id 归组。
-    const itemId = String(message.id || '')
-    const run = async () => {
-      try {
-        await agent.followup(input)
-      } catch (error) {
-        this.log(`${chatKey}：followup 失败（${String((error && error.message) || error)}）`,
-          { level: 'warn' })
-        return false
-      }
-      this.log(`收到 ${chatKey} → 会话 …${sessionKey(resolved.sessionId).slice(-8)}：`
-        + summarize(message.text, 30))
-      return true
+    try {
+      await agent.followup(input)
+    } catch (error) {
+      this.log(`${chatKey}：followup 失败（${String((error && error.message) || error)}）`,
+        { level: 'warn', itemId: String(message.id) })
+      return false
     }
 
-    return this.withItemId
-      ? this.withItemId(itemId, run)
-      : run()
+    // itemId 显式带上，让这条日志和 Java 侧的行能按同一 id 归组
+    this.log(`收到 ${chatKey} → 会话 …${shortId(sessionId)}：`
+      + summarize(message.text, DELIVERY_SUMMARY_LEN), { itemId: String(message.id) })
+    return true
   }
 
   /** 正文块：先文字，再图片（图片要过 DSH 附件服务准入）。 */
   async #buildContent(message) {
     const text = String((message && message.text) || '')
-    let content = [{ type: 'text', text }]
+    const content = [{ type: 'text', text }]
 
     const images = Array.isArray(message && message.images) ? message.images : []
     if (!images.length) return content
@@ -200,7 +183,6 @@ export class Inbound {
 
     try {
       const admitted = await service.admitPromptContent(content.concat(blocks))
-      // 记下「DSH 附件 id → Java 存的原图」，回发同一张图时用它保住 GIF
       const admittedImages = (Array.isArray(admitted) ? admitted : [])
         .filter((block) => block && block.type === 'image' && block.attachment)
       admittedImages.forEach((block, index) => {
@@ -217,12 +199,13 @@ export class Inbound {
     }
   }
 
+  /** 记下「附件 id → 原图」，FIFO 淘汰。 */
   #rememberOriginal(attachmentId, path) {
     if (!attachmentId || !path) return
-    if (this.originalByAttachment.size >= ORIGINAL_MAP_LIMIT) {
-      // 简单的 FIFO 淘汰：Map 保持插入顺序
+    while (this.originalByAttachment.size >= ORIGINAL_MAP_LIMIT) {
       const oldest = this.originalByAttachment.keys().next().value
-      if (oldest !== undefined) this.originalByAttachment.delete(oldest)
+      if (oldest === undefined) break
+      this.originalByAttachment.delete(oldest)
     }
     this.originalByAttachment.set(attachmentId, path)
   }

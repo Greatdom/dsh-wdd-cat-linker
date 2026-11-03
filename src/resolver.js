@@ -117,6 +117,45 @@ export class SessionResolver {
     return undefined
   }
 
+  /**
+   * 拿到「活着的 agent」，没有就从磁盘恢复。
+   *
+   * <p>为什么需要它：`agents.get(id)` 查的是**内存里有没有常驻的 agent 实例**，
+   * 而 DSH 的 agent 是按需创建、用完可能回收的。所以「你还能在 UI 里和这个会话聊天」
+   * 和「agents.get() 查得到」根本不是一回事——会话文件在磁盘上好好的，
+   * 但内存里没有 agent，`get()` 就返回 undefined。
+   *
+   * <p>正确做法是走 `sessionController.agents.resolveAgent(id)`：
+   * 它「解析或恢复，并发去重」，是 DSH 给普通会话准备的官方入口。
+   * 直接调 `agents.resume()` 不行——那需要 `agentOptions` + `setup` 闭包，
+   * 只有 session-controller 内部才拿得到。
+   *
+   * @returns {Promise<object|undefined>} agent 实例；恢不到返回 undefined
+   */
+  async resolveAgentAsync(sessionId) {
+    const raw = String(sessionId == null ? '' : sessionId).trim()
+    if (!raw) return undefined
+
+    // 先查内存，省掉一次不必要的恢复
+    const cached = this.findAgent(raw)
+    if (cached) return cached
+
+    const controller = this.#service('sessionController')
+    const resolver = controller && controller.agents
+    if (!resolver || typeof resolver.resolveAgent !== 'function') {
+      // 宿主没提供（老版本 DSH，或这个插件跑在非宿主进程里）
+      return undefined
+    }
+
+    try {
+      const found = await resolver.resolveAgent(raw)
+      if (found && !found.error && found.agent) return found.agent
+    } catch {
+      // 会话不存在、被归档、或恢复失败——都当作「拿不到」
+    }
+    return undefined
+  }
+
   /** 会话显示名（日志/排查用）。 */
   sessionTitle(sessionId) {
     try {
@@ -198,11 +237,12 @@ export class SessionResolver {
    *
    * @returns {{sessionId: string, reason: string} | {error: string}}
    */
-  resolveBinding(binding, pick = 'recent') {
+  async resolveBinding(binding, pick = 'recent') {
     if (!binding) return { error: '绑定为空' }
 
     if (binding.target === 'session') {
       if (!this.findAgent(binding.sessionId)) {
+        if(!this.resolveAgentAsync(sessionId))
         return { error: `会话 …${sessionKey(binding.sessionId).slice(-8)} 没开着（先去 DSH 里打开它）` }
       }
       return { sessionId: binding.sessionId, reason: 'session' }

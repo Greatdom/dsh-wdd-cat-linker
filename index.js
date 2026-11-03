@@ -239,13 +239,13 @@ export function apply(ctx, config) {
    *
    * <p>返回 {@code null} 表示「这次别动清单」（见 publishPresence 的说明）。
    */
-  const servedChats = () => {
+   const servedChats = async () => {
     if (!settings.enabled) return []
     const chats = []
     for (const binding of settings.bindings) {
       if (binding.enabled === false) continue
       log("bindingxxxx:"+binding.sessionId+":"+binding.chatId)
-      const resolved = resolver.resolveBinding(binding, settings.workspacePick)
+      const resolved = await resolver.resolveBinding(binding, settings.workspacePick)
       if (resolved.error) {
         log("resolved.error:"+resolved.error)
         
@@ -315,7 +315,7 @@ export function apply(ctx, config) {
       reportFailure('拉取绑定失败（沿用上一份）：' + String((error && error.message) || error))
     }
 
-    const chats = servedChats()
+    const chats = await servedChats()
      log("chats:"+chats)
 
     const payloadChats = chats.length === 0 && settings.enabled && settings.bindings.length > 0

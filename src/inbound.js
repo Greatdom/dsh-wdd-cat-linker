@@ -121,7 +121,7 @@ export class Inbound {
       return 'drop'
     }
 
-    const resolved = this.resolver.resolveBinding(binding, config.workspacePick)
+    const resolved = await this.resolver.resolveBinding(binding, config.workspacePick)
     if (resolved.error) {
       this.log(`${chatKey}：${resolved.error}（留待下一轮）`)
       return false

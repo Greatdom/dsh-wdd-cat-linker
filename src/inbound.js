@@ -35,7 +35,16 @@ export class Inbound {
     this.getConfig = deps.getConfig
     this.resolver = deps.resolver
     this.bridge = deps.bridge
+    /**
+     * 记账。可选第二参数 { level, itemId }。
+     * 默认由 index.js 注入的那个实现负责写内存缓冲 + 宿主 logger。
+     */
     this.log = deps.log
+    /**
+     * 在某个 itemId 上下文里执行 —— 让这段代码里打的日志都带上同一个 id。
+     * 由 index.js 提供（它持有「当前 itemId」的状态）；缺失时退化为直接执行。
+     */
+    this.withItemId = deps.withItemId
     this.attachmentsService = deps.attachmentsService
 
     /** 正在跑的 poll（single-flight 用）。 */
@@ -135,16 +144,25 @@ export class Inbound {
       source: { kind: 'user', qq: message.identity || null },
     }
 
-    try {
-      await agent.followup(input)
-    } catch (error) {
-      this.log(`${chatKey}：followup 失败（${String((error && error.message) || error)}）`)
-      return false
+    // 用 Java 侧的 itemId 作为串联标识：这条消息相关的所有日志都带它，
+    // /logs 页面上就能和 Java 侧的行按同一 id 归组。
+    const itemId = String(message.id || '')
+    const run = async () => {
+      try {
+        await agent.followup(input)
+      } catch (error) {
+        this.log(`${chatKey}：followup 失败（${String((error && error.message) || error)}）`,
+          { level: 'warn' })
+        return false
+      }
+      this.log(`收到 ${chatKey} → 会话 …${sessionKey(resolved.sessionId).slice(-8)}：`
+        + summarize(message.text, 30))
+      return true
     }
 
-    this.log(`收到 ${chatKey} → 会话 …${sessionKey(resolved.sessionId).slice(-8)}：`
-      + summarize(message.text, 30))
-    return true
+    return this.withItemId
+      ? this.withItemId(itemId, run)
+      : run()
   }
 
   /** 正文块：先文字，再图片（图片要过 DSH 附件服务准入）。 */

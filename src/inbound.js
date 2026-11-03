@@ -127,7 +127,7 @@ export class Inbound {
       return false
     }
 
-    const agent = this.resolver.findAgent(resolved.sessionId)
+      const agent = this.resolver.findAgent(resolved.sessionId) || await this.resolver.resolveAgentAsync(resolved.sessionId)
     if (!agent || typeof agent.followup !== 'function') {
       this.log(`${chatKey}：会话 …${sessionKey(resolved.sessionId).slice(-8)} 现在没活着（留待下一轮）`)
       return false

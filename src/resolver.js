@@ -241,12 +241,19 @@ export class SessionResolver {
     if (!binding) return { error: '绑定为空' }
 
     if (binding.target === 'session') {
-      if (!this.findAgent(binding.sessionId)) {
-        if(!this.resolveAgentAsync(sessionId))
-        return { error: `会话 …${sessionKey(binding.sessionId).slice(-8)} 没开着（先去 DSH 里打开它）` }
+      const agent = await this.resolveAgentAsync(binding.sessionId)
+      if (!agent) {
+        return { error: `会话 …${sessionKey(binding.sessionId).slice(-8)} 打不开（可能已被归档或删掉）` }
       }
       return { sessionId: binding.sessionId, reason: 'session' }
     }
+    // if (binding.target === 'session') {
+    //   if (!this.findAgent(binding.sessionId)) {
+    //     if(!this.resolveAgentAsync(binding.sessionId))
+    //     return { error: `会话 …${sessionKey(binding.sessionId).slice(-8)} 没开着（先去 DSH 里打开它）` }
+    //   }
+    //   return { sessionId: binding.sessionId, reason: 'session' }
+    // }
     if (binding.target === 'workspace') {
       const picked = this.pickSessionInWorkspace(binding.workspaceId, pick)
       if (!picked) {

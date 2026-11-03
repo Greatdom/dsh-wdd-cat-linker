@@ -403,7 +403,7 @@ export function apply(ctx, config) {
         log(`  ${key} →（已停用）`)
         continue
       }
-      const resolved = resolver.resolveBinding(binding, settings.workspacePick)
+      const resolved = await resolver.resolveBinding(binding, settings.workspacePick)
       if (resolved.error) {
         log(`  ${key} → ⚠ ${resolved.error}`)
       } else {

@@ -22,6 +22,7 @@ import { Bridge } from './src/bridge.js'
 import { normalizeConfig } from './src/config.js'
 import { Inbound } from './src/inbound.js'
 import { bindLogger, Logger } from './src/logger.js'
+import { TurnOrigin } from './src/origin.js'
 import { Outbound } from './src/outbound.js'
 import { Presence } from './src/presence.js'
 import { SessionResolver } from './src/resolver.js'
@@ -88,10 +89,17 @@ export function apply(ctx, config) {
   // ── 四个业务模块 ────────────────────────────────────────────
   const bindings = new BindingSource({ getConfig: () => settings, bridge, log })
 
+  /**
+   * 轮次来源登记：入站记「这轮谁触发的」，出站据此定向。
+   * 出入站共用同一个实例，所以在这里创建而不是各自 new。
+   */
+  const origin = new TurnOrigin()
+
   const inbound = new Inbound({
     getConfig: () => settings,
     resolver,
     bridge,
+    origin,
     log,
     attachmentsService,
   })
@@ -100,6 +108,7 @@ export function apply(ctx, config) {
     getConfig: () => settings,
     resolver,
     bridge,
+    origin,
     log,
     attachmentsService,
     resolveOriginal: (attachmentId) => inbound.resolveOriginal(attachmentId),

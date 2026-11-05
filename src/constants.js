@@ -20,6 +20,9 @@ export const ORIGINAL_MAP_LIMIT = 200
 /** 已上报轮次的去重集合上限，超出按插入顺序淘汰最旧的。 */
 export const SENT_TURNS_LIMIT = 500
 
+/** 「会话 → 本轮来源聊天」映射上限，超出按插入顺序淘汰最旧的。 */
+export const SESSION_ORIGIN_LIMIT = 100
+
 /** 一轮里最多带几张图。DSH 消息里抽取与上报两处必须用同一个值。 */
 export const MAX_IMAGES_PER_TURN = 9
 

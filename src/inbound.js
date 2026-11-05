@@ -27,6 +27,7 @@ export class Inbound {
    * @param {() => object} deps.getConfig
    * @param {import('./resolver.js').SessionResolver} deps.resolver
    * @param {import('./bridge.js').Bridge} deps.bridge
+   * @param {import('./origin.js').TurnOrigin} deps.origin 轮次来源登记
    * @param {(text: string, meta?: object) => void} deps.log
    * @param {Function} [deps.attachmentsService]
    */
@@ -34,6 +35,7 @@ export class Inbound {
     this.getConfig = deps.getConfig
     this.resolver = deps.resolver
     this.bridge = deps.bridge
+    this.origin = deps.origin
     this.log = deps.log
     this.attachmentsService = deps.attachmentsService
 
@@ -141,6 +143,10 @@ export class Inbound {
         { level: 'warn', itemId: String(message.id) })
       return false
     }
+
+    // 记下来源：DSH 这轮回复只该发回这一个聊天。
+    // 不记的话出站无从判断「谁问的」，只能按会话广播，手动说话也拦不住。
+    this.origin.remember(sessionId, chatKey)
 
     // itemId 显式带上，让这条日志和 Java 侧的行能按同一 id 归组
     this.log(`收到 ${chatKey} → 会话 …${shortId(sessionId)}：`

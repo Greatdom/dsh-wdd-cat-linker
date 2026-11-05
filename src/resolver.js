@@ -8,7 +8,7 @@
  */
 
 import { WorkspaceIndex } from './workspace.js'
-import { idVariants, sameSession, sessionKey, shortId } from './session-id.js'
+import { idVariants, sessionKey, shortId } from './session-id.js'
 
 export class SessionResolver {
   /** @param {object} ctx cordis 上下文 */
@@ -195,28 +195,7 @@ export class SessionResolver {
     return { sessionId, agent, reason }
   }
 
-  // ─────────────────────────── 反查与路径 ───────────────────────────
-
-  /**
-   * 反查：这间会话说的话该发回哪些 QQ 聊天。
-   * 同一间会话可以绑多个聊天（比如私聊 + 一个群）。
-   */
-  bindingsForSession(sessionIdToFind, bindings, pick = 'recent') {
-    const snapshot = this.snapshotSessions()
-    const result = []
-    for (const binding of bindings) {
-      if (binding.enabled === false) continue
-      let mappedId = ''
-      if (binding.target === 'session') {
-        mappedId = binding.sessionId
-      } else {
-        const picked = this.workspace.pickSession(binding.workspaceId, pick, snapshot)
-        mappedId = picked ? picked.sessionId : ''
-      }
-      if (mappedId && sameSession(mappedId, sessionIdToFind)) result.push(binding)
-    }
-    return result
-  }
+  // ─────────────────────────── 路径 ───────────────────────────
 
   /** 解析相对路径的根目录：会话所在工作区优先，再退到进程当前目录。 */
   rootsForSession(sessionId) {

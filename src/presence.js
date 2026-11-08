@@ -32,7 +32,26 @@ export class Presence {
     this.logger = logger
     /** single-flight：上一轮没发完就跳过，避免堆请求。 */
     this.running = null
+
+    /**
+     * 已确认能打开的会话键。恢复成功后记下来，之后不再重复尝试。
+     *
+     * 为什么要缓存：`resumeAgent()` 要读磁盘、建上下文，是重操作。
+     * 心跳每 5 秒一次，不缓存就等于每 5 秒给每间会话做一次恢复，会把 DSH 拖垮。
+     */
+    this.opened = new Set()
+
+    /**
+     * 恢复失败过一次的会话键 → 下次允许重试的时间戳。
+     *
+     * 会话可能稍后才被创建（比如用户手动打开），所以不能永久拉黑；
+     * 但也不能每 5 秒重试一次 —— 失败通常是「会话不存在」，重试没有意义还浪费磁盘。
+     */
+    this.retryAfter = new Map()
   }
+
+  /** 恢复失败的冷却时间：期间不再尝试，避免心跳里反复读盘。 */
+  static RETRY_COOLDOWN_MS = 60_000
 
   /** 心跳入口。 */
   tick() {
@@ -48,7 +67,7 @@ export class Presence {
     await this.bindings.refresh()
 
     const settings = this.getConfig()
-    const chats = this.#servedChats(settings)
+    const chats = await this.#servedChats(settings)
 
     // 有绑定却一条都解析不出来 = 临时状态，别让 Java 清空清单
     const payloadChats = chats.length === 0 && settings.enabled && settings.bindings.length > 0
@@ -70,32 +89,98 @@ export class Presence {
   /**
    * 当前能真正落地的聊天。
    *
-   * 只做**内存判断**，不恢复会话：心跳每几秒一次，
-   * 在这里触发会话恢复会把 DSH 拖垮。
+   * **会恢复会话**：DSH 的 agent 按需创建、用完回收，所以「会话没打开」是常态。
+   * 如果这里只查内存，绑定就会在心跳里消失，Java 的 `servedChats` 掉到 0，整条链路停摆。
+   *
+   * 为什么不会拖垮 DSH：
+   *   · 恢复成功 → 记进 {@link opened}，之后直接命中，不再重复恢复；
+   *   · 恢复失败 → 冷却 {@link RETRY_COOLDOWN_MS} 再试，不会每 5 秒读一次盘。
    */
-  #servedChats(settings) {
+  async #servedChats(settings) {
     if (!settings.enabled) return []
 
     const snapshot = this.resolver.snapshotSessions()
     const chats = []
     for (const binding of settings.bindings) {
       if (binding.enabled === false) continue
-      const picked = this.resolveInMemory(binding, settings.workspacePick, snapshot)
-      if (picked) chats.push({ chatType: binding.chatType, chatId: binding.chatId })
+      const picked = await this.resolveBinding(binding, settings.workspacePick, snapshot)
+      if (picked) {
+        const chat = { chatType: binding.chatType, chatId: binding.chatId }
+        // 同一间会话可能被多条绑定共用，Java 那边按 chatKey 去重即可
+        chats.push(chat)
+      }
     }
     return chats
   }
 
-  /** 同步的「能不能落地」判断，等价于 resolveTarget({resume:false}) 但不走 async。 */
-  resolveInMemory(binding, pick, snapshot) {
+  /**
+   * 「这条绑定能不能用」判断 —— **会恢复会话**。
+   *
+   * 为什么必须恢复：DSH 的 agent 按需创建、用完回收。
+   * 只查内存的话，会话一被切走，绑定就在心跳里「消失」，
+   * Java 的 `servedChats` 掉到 0，整条链路停摆。
+   *
+   * 三档处理，避免把 DSH 拖垮：
+   *   ① 在 {@link opened} 里 → 直接放行，零开销；
+   *   ② 不在冷却期 → `resumeAgent()` 尝试恢复（成功就记进缓存）；
+   *   ③ 恢复失败且还在冷却期 → 跳过，别每 5 秒读一次盘。
+   *
+   * @returns {Promise<string|null>} 能服务的会话 id
+   */
+  async resolveBinding(binding, pick, snapshot) {
     if (binding.target === 'session') {
-      return this.resolver.findAgent(binding.sessionId) ? binding.sessionId : null
+      const id = String(binding.sessionId || '').trim()
+      if (!id) return null
+      return (await this.#ensureOpen(id)) ? id : null
     }
+
     if (binding.target === 'workspace') {
+      // 工作区必须挑出一间具体会话，否则 Java 不知道该拉哪个聊天
       const picked = this.resolver.pickSessionInWorkspace(binding.workspaceId, pick, snapshot)
-      return picked ? picked.sessionId : null
+      if (!picked) return null
+      return (await this.#ensureOpen(picked.sessionId)) ? picked.sessionId : null
     }
+
     return null
+  }
+
+  /**
+   * 确保会话有活的 agent，有就返回 true。
+   *
+   * 命中缓存 / 冷却期内直接返回，不触发任何 IO。
+   */
+  async #ensureOpen(sessionId) {
+    const key = sessionKey(sessionId)
+
+    // ① 已经确认过能开
+    if (this.opened.has(key)) return true
+
+    // ② 内存里本来就有（不需要恢复，顺手记进缓存）
+    if (this.resolver.findAgent(sessionId)) {
+      this.opened.add(key)
+      return true
+    }
+
+    // ③ 失败冷却期内，先别试
+    const retryAt = this.retryAfter.get(key)
+    if (retryAt !== undefined && Date.now() < retryAt) return false
+
+    // ④ 真正去恢复
+    const agent = await this.resolver.resumeAgent(sessionId)
+    if (agent) {
+      this.opened.add(key)
+      this.retryAfter.delete(key)
+      this.logger.write(`会话 …${key.slice(-8)} 已恢复，开始为它服务`)
+      return true
+    }
+
+    // ⑤ 恢复失败：冷却后再试，期间不重试
+    this.retryAfter.set(key, Date.now() + Presence.RETRY_COOLDOWN_MS)
+    this.logger.failOnce(
+      `会话 …${key.slice(-8)} 打不开（可能已归档或删除），`
+      + `${Math.round(Presence.RETRY_COOLDOWN_MS / 1000)} 秒后重试`,
+    )
+    return false
   }
 
   /** 会话 / 工作区候选清单，供设置页的下拉框使用。 */

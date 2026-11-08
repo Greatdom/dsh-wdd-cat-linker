@@ -27,6 +27,7 @@ import { Outbound } from './src/outbound.js'
 import { Presence } from './src/presence.js'
 import { SessionResolver } from './src/resolver.js'
 import { sessionKey } from './src/session-id.js'
+import { RemoteSettings } from './src/settings.js'
 
 /** 插件名（cordis 用它做去重/卸载标识）。 */
 export const name = 'dsh-wdd-cat-linker'
@@ -72,6 +73,12 @@ export function apply(ctx, config) {
   const logger = new Logger(ctx)
   const log = bindLogger(logger)
   const resolver = new SessionResolver(ctx)
+
+  /**
+   * 中转站地址与令牌来自本地 config（不是 Java 的 linker.json）——
+   * 否则就是「要连 Java 才能知道 Java 在哪」的循环依赖。
+   * 这两项在设置页改了之后需要重启 DSH 才生效，属于已知限制。
+   */
   const bridge = new Bridge({
     baseUrl: settings.catBaseUrl,
     token: settings.catToken,
@@ -122,6 +129,14 @@ export function apply(ctx, config) {
     logger,
   })
 
+  /**
+   * 配置同步：每次心跳顺带从 Java 拉一次。
+   *
+   * 心跳本来就要请求 Java，多这一条不增加往返；
+   * 换来的是「设置页改完立刻生效，不用重启也不用重载插件」。
+   */
+  const remoteSettings = new RemoteSettings({ settings, bridge, log })
+
   // ── 出站：监听会话事件 ──────────────────────────────────────
   ctx.effect(() => {
     const dispose = ctx.on('session/event', (session, event) => {
@@ -146,7 +161,10 @@ export function apply(ctx, config) {
   if (typeof ctx.interval !== 'function') {
     log('宿主没提供 timer（ctx.interval 不存在）—— QQ → DSH 收不到消息，DSH → QQ 也不可用')
   } else {
-    ctx.interval(() => { void presence.tick() }, settings.presenceIntervalMs)
+    ctx.interval(() => {
+      // 先同步配置再报心跳：这一拍用的就是最新值
+      void remoteSettings.refresh().then(() => presence.tick())
+    }, settings.presenceIntervalMs)
     ctx.interval(() => { void inbound.tick() }, settings.outboxPollMs)
   }
 

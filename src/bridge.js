@@ -24,6 +24,16 @@ export class Bridge {
    * @param {number} [options.timeoutMs] 单次请求超时
    */
   constructor({ baseUrl, token = '', timeoutMs = 5000 }) {
+    this.reconfigure({ baseUrl, token, timeoutMs })
+  }
+
+  /**
+   * 换地址/令牌/超时。
+   *
+   * 为什么需要：中转站地址可以在设置页改，而 Bridge 是构造时创建的。
+   * 让它可以就地改，比销毁重建整条链路简单得多。
+   */
+  reconfigure({ baseUrl, token = '', timeoutMs = 5000 }) {
     this.base = String(baseUrl || '').trim().replace(/\/+$/, '')
     this.token = String(token || '').trim()
     this.timeoutMs = Math.max(500, Number(timeoutMs) || 5000)

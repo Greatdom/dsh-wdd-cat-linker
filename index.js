@@ -27,7 +27,7 @@ import { Outbound } from './src/outbound.js'
 import { Presence } from './src/presence.js'
 import { SessionResolver } from './src/resolver.js'
 import { sessionKey } from './src/session-id.js'
-import { RemoteSettings } from './src/settings.js'
+import { configFilePath, LocalStore, registerRoutes } from './src/local-store.js'
 
 /** 插件名（cordis 用它做去重/卸载标识）。 */
 export const name = 'dsh-wdd-cat-linker'
@@ -75,15 +75,40 @@ export function apply(ctx, config) {
   const resolver = new SessionResolver(ctx)
 
   /**
-   * 中转站地址与令牌来自本地 config（不是 Java 的 linker.json）——
-   * 否则就是「要连 Java 才能知道 Java 在哪」的循环依赖。
-   * 这两项在设置页改了之后需要重启 DSH 才生效，属于已知限制。
+   * 本地配置：存在 DSH profile 的 `data/linker.json`。
+   *
+   * 为什么不再存 Java：地址是「Java 在哪」，存 Java 里就是循环依赖，
+   * 而且 Java 没起来时连地址都改不了。现在文件就是唯一来源。
    */
+  const store = new LocalStore({
+    file: configFilePath(ctx),
+    settings,
+    log,
+  })
+  // 启动时先读一次磁盘，覆盖 cordis 传进来的默认值
+  store.applyFromFile()
+
   const bridge = new Bridge({
     baseUrl: settings.catBaseUrl,
     token: settings.catToken,
     timeoutMs: settings.requestTimeoutMs,
   })
+
+  /**
+   * 中转站地址/令牌/超时可能被设置页改掉 —— 每次心跳前对齐一次。
+   *
+   * 其他项（开关、间隔）由各自的模块在运行时直接读 settings，不需要同步。
+   */
+  const syncBridge = () => {
+    if (bridge.base !== settings.catBaseUrl.replace(/\/+$/, '')) {
+      bridge.reconfigure({
+        baseUrl: settings.catBaseUrl,
+        token: settings.catToken,
+        timeoutMs: settings.requestTimeoutMs,
+      })
+      log(`中转站地址已切换为 ${bridge.base}`)
+    }
+  }
 
   const attachmentsService = () => {
     try {
@@ -130,12 +155,19 @@ export function apply(ctx, config) {
   })
 
   /**
-   * 配置同步：每次心跳顺带从 Java 拉一次。
+   * 设置页的读写路由（同源，不跨域）。
    *
-   * 心跳本来就要请求 Java，多这一条不增加往返；
-   * 换来的是「设置页改完立刻生效，不用重启也不用重载插件」。
+   * 保存后立刻生效：`store.save()` 会就地写进 settings，
+   * 下一次心跳/轮询自然读到新值。
    */
-  const remoteSettings = new RemoteSettings({ settings, bridge, log })
+  ctx.effect(() => {
+    const dispose = registerRoutes(ctx, store)
+    if (!dispose) {
+      log('宿主没提供 webServer —— 设置页将无法读取配置（链路本身不受影响）')
+      return undefined
+    }
+    return dispose
+  }, 'wdd-cat-linker: 设置页接口')
 
   // ── 出站：监听会话事件 ──────────────────────────────────────
   ctx.effect(() => {
@@ -162,8 +194,9 @@ export function apply(ctx, config) {
     log('宿主没提供 timer（ctx.interval 不存在）—— QQ → DSH 收不到消息，DSH → QQ 也不可用')
   } else {
     ctx.interval(() => {
-      // 先同步配置再报心跳：这一拍用的就是最新值
-      void remoteSettings.refresh().then(() => presence.tick())
+      // 每次心跳前对齐一次地址（可能被设置页改过），再上报
+      syncBridge()
+      void presence.tick()
     }, settings.presenceIntervalMs)
     ctx.interval(() => { void inbound.tick() }, settings.outboxPollMs)
   }

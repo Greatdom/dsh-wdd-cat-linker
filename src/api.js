@@ -15,6 +15,4 @@ export const API = {
   presence: '/api/v1/dsh/presence',
   /** 绑定表（以 Java 设置页为准）。 */
   bindings: '/api/v1/settings/bindings',
-  /** 跳板配置（Java 托管，跳板定期拉）。 */
-  linkerConfig: '/api/v1/linker/config',
 }

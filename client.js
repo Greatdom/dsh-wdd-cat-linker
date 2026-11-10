@@ -35,33 +35,81 @@ window.__ModuleLoader__.load({
     const h = React.createElement
 
     /**
-     * Java 中转站的地址 —— **必须是绝对地址**。
+     * 配置读写走**宿主同源路由**（`/wdd-cat-linker/config`）。
      *
-     * 为什么：这个页面由 DSH 客户端加载，origin 是 DSH 自己的端口（每次启动都变）。
-     * 写相对路径 `/api/v1/linker/config` 会打到 DSH 的端口上（那儿没有这个接口），
-     * 得到的只有 403。
+     * 为什么是相对路径：这条路由由跳板自己注册在 DSH 宿主上，
+     * 页面和它同源，不需要跨域、也不会打到 Java 那边。
      *
-     * 代价是跨域，所以 Java 侧必须放开 CORS（见 WebCorsConfig）。
+     * 之前配置存在 Java 时用的是绝对地址 + CORS，那条路已经废掉了 ——
+     * 「Java 没起来就读不到配置」正是要解决的问题。
      */
-    const BASE = 'http://127.0.0.1:8080/api/v1/linker'
+    const CONFIG_PATH = '/wdd-cat-linker/config'
 
     // ── 取值 ────────────────────────────────────────────────
 
     /** 读；失败返回 null，不抛（页面不该因为一次网络抖动白屏）。 */
     const get = (path) =>
-      fetch(BASE + path, { cache: 'no-store' })
+      fetch(path, { cache: 'no-store' })
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null)
 
     /** 写。 */
     const post = (path, body) =>
-      fetch(BASE + path, {
+      fetch(path, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body || {}),
       })
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null)
+
+    /**
+     * 探测中转站是否可达。
+     *
+     * 直接打目标地址的 `/api/v1/health` —— 这里是**跨域**请求，
+     * 所以 Java 侧的 CORS 配置（WebCorsConfig）仍然需要保留。
+     *
+     * @param {string} baseUrl 用户当前填的地址
+     * @param {string} token   有就带上
+     * @returns {Promise<{ok: boolean, detail: string}>}
+     */
+    async function probeServer(baseUrl, token) {
+      const base = String(baseUrl || '').trim().replace(/\/+$/, '')
+      if (!base) return { ok: false, detail: '还没填地址' }
+
+      let url
+      try {
+        url = new URL('/api/v1/health', base).toString()
+      } catch {
+        return { ok: false, detail: '地址格式不对，示例: http://127.0.0.1:8080' }
+      }
+
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 4000)
+      try {
+        const headers = { accept: 'application/json' }
+        if (token) headers.authorization = `Bearer ${token}`
+        const res = await fetch(url, { headers, signal: controller.signal, cache: 'no-store' })
+        if (!res.ok) {
+          return { ok: false, detail: `服务器有响应但状态码是 ${res.status}` }
+        }
+        const body = await res.json().catch(() => null)
+        const onebot = body && body.onebot
+        if (onebot && onebot.ok === false) {
+          return { ok: true, detail: `中转站在线，但 QQ 没连上（${onebot.error || '原因不明'}）` }
+        }
+        const qq = onebot && onebot.nickname ? `，QQ：${onebot.nickname}` : ''
+        return { ok: true, detail: `中转站在线${qq}` }
+      } catch (error) {
+        const msg = String((error && error.message) || error)
+        if (controller.signal.aborted) {
+          return { ok: false, detail: '连接超时（4 秒没响应）' }
+        }
+        return { ok: false, detail: `连不上：${msg}` }
+      } finally {
+        clearTimeout(timer)
+      }
+    }
 
     // ── 字段定义（决定表单长什么样）────────────────────────
 
@@ -141,6 +189,41 @@ window.__ModuleLoader__.load({
       ok: { color: 'var(--dsw-alias-state-business-primary, #4a7dff)', fontSize: 12 },
       dirty: { color: '#c0392b', fontSize: 12, fontWeight: 600 },
       err: { color: '#c0392b', fontSize: 12 },
+      probeOk: {
+        padding: '8px 12px',
+        marginBottom: 12,
+        borderRadius: 8,
+        fontSize: 12.5,
+        color: 'var(--dsw-alias-state-business-primary, #1a7f37)',
+        background: 'rgba(26,127,55,.08)',
+        border: '1px solid rgba(26,127,55,.25)',
+      },
+      probeBad: {
+        padding: '8px 12px',
+        marginBottom: 12,
+        borderRadius: 8,
+        fontSize: 12.5,
+        color: '#c0392b',
+        background: 'rgba(192,57,43,.08)',
+        border: '1px solid rgba(192,57,43,.25)',
+      },
+      probeNeutral: {
+        padding: '8px 12px',
+        marginBottom: 12,
+        borderRadius: 8,
+        fontSize: 12.5,
+        opacity: 0.7,
+        border: '1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.1))',
+      },
+      btnSmall: {
+        border: '1px solid currentColor',
+        borderRadius: 5,
+        padding: '2px 10px',
+        background: 'transparent',
+        color: 'inherit',
+        fontSize: 11.5,
+        cursor: 'pointer',
+      },
     }
 
     // ── 组件 ────────────────────────────────────────────────
@@ -151,18 +234,32 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false)
       const [msg, setMsg] = React.useState('')
       const [loadError, setLoadError] = React.useState('')
+      /** 最近一次连接探测的结果：null = 还没测 */
+      const [probe, setProbe] = React.useState(null)
+      const [probing, setProbing] = React.useState(false)
 
-      // 首次拉配置
+      /** 测一次中转站，把结果记进状态。 */
+      const runProbe = async (baseUrl, token) => {
+        setProbing(true)
+        const result = await probeServer(baseUrl, token)
+        setProbing(false)
+        setProbe(result)
+        return result
+      }
+
+      // 首次拉配置（走宿主同源路由，**不需要 Java 在线**）
       React.useEffect(() => {
         let alive = true
-        get('/config').then((r) => {
+        get(CONFIG_PATH).then((r) => {
           if (!alive) return
           if (!r || !r.values) {
-            setLoadError('读不到配置——确认 Java 中转站（:8080）在运行')
+            setLoadError('读不到配置——跳板插件可能没加载成功，检查 DSH 日志里的 wdd-cat-linker 行')
             return
           }
           setState(r)
           setDraft({ ...r.values })
+          // 进来先探一次，告诉用户当前地址通不通
+          void runProbe(r.values.catBaseUrl, r.values.catToken)
         })
         return () => { alive = false }
       }, [])
@@ -173,18 +270,23 @@ window.__ModuleLoader__.load({
         setMsg('')
       }
 
-      /** 保存。 */
+      /** 保存。**不要求 Java 在线** —— 配置存在跳板本地。 */
       const save = async () => {
         if (!draft) return
         setBusy(true)
-        const r = await post('/config', draft)
+        const r = await post(CONFIG_PATH, draft)
         setBusy(false)
         if (r && r.ok) {
           setState((old) => ({ ...old, values: r.values }))
           setDraft({ ...r.values })
-          setMsg(`已保存 ${r.changed} 项 ✓ 跳板下次心跳就会用新值`)
+          setMsg(`已保存 ${r.changed} 项 ✓ 已写入跳板配置，立即生效`)
+          // 地址或令牌变了就顺手重测一次
+          if (r.values.catBaseUrl !== state.values.catBaseUrl
+            || r.values.catToken !== state.values.catToken) {
+            void runProbe(r.values.catBaseUrl, r.values.catToken)
+          }
         } else {
-          setMsg('保存失败——看 Java 日志')
+          setMsg('保存失败——看 DSH 日志')
         }
       }
 
@@ -252,11 +354,38 @@ window.__ModuleLoader__.load({
       }
       if (current) cards.push(current)
 
+      /** 连接状态条：鼠标停一下能看详情。 */
+      const statusBar = () => {
+        if (probing) {
+          return h('div', { style: S.probeNeutral }, '正在检查中转站连接…')
+        }
+        if (!probe) {
+          return h('div', { style: S.probeNeutral }, '还没检查中转站连接')
+        }
+        const style = probe.ok ? S.probeOk : S.probeBad
+        const icon = probe.ok ? '✓' : '✗'
+        return h('div', { style: { ...style, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' } },
+          h('span', null, `${icon} ${probe.detail}`),
+          h('button', {
+            type: 'button',
+            style: S.btnSmall,
+            disabled: probing,
+            onClick: () => void runProbe(draft.catBaseUrl, draft.catToken),
+          }, '测试连接'),
+          probe.ok
+            ? null
+            : h('span', { style: S.hint },
+              '连不上也能改配置——配置存在跳板本地，不依赖服务器。'),
+        )
+      }
+
       return h('div', { style: S.wrap },
         h('div', { style: S.title }, '通到 QQ'),
         h('div', { style: S.desc },
           'QQ 与 DSH 会话之间的收发中转。业务节奏在 Java 中转站，这里只调接线。'
-          + '改完点保存，跳板下次心跳就会用新值——不用重启 DSH。'),
+          + '配置保存在跳板的本地文件里，**不依赖中转站是否在线**；改完点保存立即生效。'),
+
+        statusBar(),
 
         ...cards.map((c) => h('div', { key: c.group, style: S.card },
           h('div', { style: S.groupTitle }, c.group),
@@ -276,7 +405,18 @@ window.__ModuleLoader__.load({
           h('button', { type: 'button', style: S.btn, onClick: reset, disabled: busy || !dirty }, '放弃改动'),
           h('button', {
             type: 'button', style: S.btn, disabled: busy,
-            onClick: () => { setBusy(true); get('/config').then((r) => { setBusy(false); if (r && r.values) { setState(r); setDraft({ ...r.values }); setMsg('已重新拉取') } }) },
+            onClick: () => {
+              setBusy(true)
+              get(CONFIG_PATH).then((r) => {
+                setBusy(false)
+                if (r && r.values) {
+                  setState(r)
+                  setDraft({ ...r.values })
+                  setMsg('已重新读取')
+                  void runProbe(r.values.catBaseUrl, r.values.catToken)
+                }
+              })
+            },
           }, '重新读取')),
       )
     }

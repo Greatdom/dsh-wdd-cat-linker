@@ -113,10 +113,15 @@ window.__ModuleLoader__.load({
 
     // ── 字段定义（决定表单长什么样）────────────────────────
 
+    /**
+     * 字段定义（决定表单长什么样）。
+     *
+     * <p>存档制度下删掉了「工作区挑会话方式」——存档只能绑一间明确的会话，
+     * 没有「在工作区里自动挑」这回事了。存档本身去 Java 的 /archives 页面管。
+     */
     const FIELDS = [
       { group: '基本', key: 'catBaseUrl', label: '中转站地址', hint: '本地 Java 服务，如 http://127.0.0.1:8080', type: 'text' },
       { key: 'catToken', label: '中转站令牌', hint: 'Java 开了鉴权才填，留空 = 不鉴权', type: 'password' },
-      { key: 'workspacePick', label: '工作区挑会话方式', hint: 'recent = 最近有活动，first = 排最前', type: 'select', options: [['recent', 'recent'], ['first', 'first']] },
 
       { group: '收发开关', key: 'enabled', label: '总开关', hint: '关掉 = 完全不收发', type: 'bool' },
       { key: 'relayOutbound', label: 'DSH → QQ', hint: '模型说完一轮，把回复发到 QQ', type: 'bool' },

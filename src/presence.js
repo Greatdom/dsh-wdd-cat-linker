@@ -1,14 +1,25 @@
 /**
- * 心跳：告诉 Java「这些聊天归我负责」，顺带上报候选清单与日志。
+ * 心跳：告诉 Java「这些存档现在归我服务、各自能服务哪些聊天」，
+ * 顺带上报候选清单与日志。
  *
  * 一个请求带三样东西，是因为它们都是跳板本来就要算的，
  * 合并上报零额外开销；拆开就得为每一样各加一条链路。
  *
- * ⚠ `chats` 的三种取值语义完全不同，Java 侧据此分支：
- *   · `[]`   —— 明确关掉：总开关关了，或绑定被删光了；
- *   · `null` —— 这次别动清单：有绑定但一条都解析不出活会话（临时状态）；
+ * ---- 存档制度下的变化 ----
+ *
+ * 原来上报的是「一堆聊天」（一维，全局一个机器人）；
+ * 现在上报的是「每个存档 + 它的会话状态 + 它能服务的聊天」（两维）。
+ *
+ * ⚠ `archives` 的三种取值语义完全不同，Java 侧据此分支：
+ *   · `[]`   —— 明确关掉：总开关关了，或一个存档都没有；
+ *   · `null` —— 这次别动清单：有存档但一个都解析不出活会话（临时状态）；
  *   · `[...]`—— 正常，整体替换。
- * 把 `null` 写成 `[]` 会让一次临时失败把整条链路停掉。
+ * 把 `null` 写成 `[]` 会让一次临时失败把整条链路停掉——这是踩过的坑。
+ *
+ * ---- 会话丢失（设计文档 Q3-B）----
+ *
+ * 会话打不开时如实上报 `sessionStatus: 'LOST'`，**不自动重建**。
+ * Java 会把状态写回存档，存档管理页显示红字让人来重新选一个。
  */
 
 import { API } from './api.js'
@@ -21,14 +32,14 @@ export class Presence {
    * @param {() => object} deps.getConfig
    * @param {import('./resolver.js').SessionResolver} deps.resolver
    * @param {import('./bridge.js').Bridge} deps.bridge
-   * @param {import('./bindings.js').BindingSource} deps.bindings
+   * @param {import('./archives.js').ArchiveSource} deps.archives
    * @param {import('./logger.js').Logger} deps.logger
    */
-  constructor({ getConfig, resolver, bridge, bindings, logger }) {
+  constructor({ getConfig, resolver, bridge, archives, logger }) {
     this.getConfig = getConfig
     this.resolver = resolver
     this.bridge = bridge
-    this.bindings = bindings
+    this.archives = archives
     this.logger = logger
     /** single-flight：上一轮没发完就跳过，避免堆请求。 */
     this.running = null
@@ -63,20 +74,21 @@ export class Presence {
   }
 
   async #run() {
-    // 先拉绑定，再算要拉哪些聊天——顺序反了会用上一份旧绑定
-    await this.bindings.refresh()
+    // 先拉存档，再算会话状态——顺序反了会用上一份旧清单
+    await this.archives.refresh()
 
     const settings = this.getConfig()
-    const chats = await this.#servedChats(settings)
+    const served = await this.#servedArchives(settings)
 
-    // 有绑定却一条都解析不出来 = 临时状态，别让 Java 清空清单
-    const payloadChats = chats.length === 0 && settings.enabled && settings.bindings.length > 0
+    // 有存档却一个都解析不出活会话 = 临时状态，别让 Java 清空清单
+    const hasArchives = this.archives.archives.length > 0
+    const payload = served.length === 0 && settings.enabled && hasArchives
       ? null
-      : chats
+      : served
 
     try {
       await this.bridge.post(API.presence, {
-        chats: payloadChats,
+        archives: payload,
         candidates: this.#candidates(),
         logs: this.logger.recent(LOG_UPLOAD_LIMIT),
       })
@@ -87,61 +99,45 @@ export class Presence {
   }
 
   /**
-   * 当前能真正落地的聊天。
+   * 当前每个存档能服务的状态。
    *
-   * **会恢复会话**：DSH 的 agent 按需创建、用完回收，所以「会话没打开」是常态。
-   * 如果这里只查内存，绑定就会在心跳里消失，Java 的 `servedChats` 掉到 0，整条链路停摆。
+   * <p>**会尝试恢复会话**：DSH 的 agent 按需创建、用完回收，所以「会话没打开」是常态。
+   * 如果这里只查内存，存档就会在心跳里「消失」，Java 的 `servedChats` 掉到 0，整条链路停摆。
    *
-   * 为什么不会拖垮 DSH：
+   * <p>为什么不会拖垮 DSH：
    *   · 恢复成功 → 记进 {@link opened}，之后直接命中，不再重复恢复；
    *   · 恢复失败 → 冷却 {@link RETRY_COOLDOWN_MS} 再试，不会每 5 秒读一次盘。
+   *
+   * @returns {Promise<Array<{archiveId, sessionId, sessionStatus, chats}>>}
    */
-  async #servedChats(settings) {
+  async #servedArchives(settings) {
     if (!settings.enabled) return []
 
-    const snapshot = this.resolver.snapshotSessions()
-    const chats = []
-    for (const binding of settings.bindings) {
-      if (binding.enabled === false) continue
-      const picked = await this.resolveBinding(binding, settings.workspacePick, snapshot)
-      if (picked) {
-        const chat = { chatType: binding.chatType, chatId: binding.chatId }
-        // 同一间会话可能被多条绑定共用，Java 那边按 chatKey 去重即可
-        chats.push(chat)
+    const out = []
+    for (const archive of this.archives.enabled()) {
+      const sessionId = archive.sessionId
+      const chats = archive.relations.map((r) => ({ chatType: r.chatType, chatId: r.chatId }))
+
+      // 没绑会话 = 这个存档现在收不了消息，如实报 LOST
+      if (!sessionId) {
+        out.push({
+          archiveId: archive.id,
+          sessionId: '',
+          sessionStatus: 'LOST',
+          chats,
+        })
+        continue
       }
-    }
-    return chats
-  }
 
-  /**
-   * 「这条绑定能不能用」判断 —— **会恢复会话**。
-   *
-   * 为什么必须恢复：DSH 的 agent 按需创建、用完回收。
-   * 只查内存的话，会话一被切走，绑定就在心跳里「消失」，
-   * Java 的 `servedChats` 掉到 0，整条链路停摆。
-   *
-   * 三档处理，避免把 DSH 拖垮：
-   *   ① 在 {@link opened} 里 → 直接放行，零开销；
-   *   ② 不在冷却期 → `resumeAgent()` 尝试恢复（成功就记进缓存）；
-   *   ③ 恢复失败且还在冷却期 → 跳过，别每 5 秒读一次盘。
-   *
-   * @returns {Promise<string|null>} 能服务的会话 id
-   */
-  async resolveBinding(binding, pick, snapshot) {
-    if (binding.target === 'session') {
-      const id = String(binding.sessionId || '').trim()
-      if (!id) return null
-      return (await this.#ensureOpen(id)) ? id : null
+      const alive = await this.#ensureOpen(sessionId)
+      out.push({
+        archiveId: archive.id,
+        sessionId,
+        sessionStatus: alive ? 'BOUND' : 'LOST',
+        chats,
+      })
     }
-
-    if (binding.target === 'workspace') {
-      // 工作区必须挑出一间具体会话，否则 Java 不知道该拉哪个聊天
-      const picked = this.resolver.pickSessionInWorkspace(binding.workspaceId, pick, snapshot)
-      if (!picked) return null
-      return (await this.#ensureOpen(picked.sessionId)) ? picked.sessionId : null
-    }
-
-    return null
+    return out
   }
 
   /**
@@ -183,7 +179,7 @@ export class Presence {
     return false
   }
 
-  /** 会话 / 工作区候选清单，供设置页的下拉框使用。 */
+  /** 会话 / 工作区候选清单，供存档管理页的下拉框使用。 */
   #candidates() {
     const live = new Set(this.resolver.liveSessionIds().map(sessionKey))
     const archived = this.resolver.archivedSessionKeys()

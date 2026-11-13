@@ -17,7 +17,7 @@
 import { readFileSync } from 'node:fs'
 import Schema from '@deepseek-ai/schemastery'
 
-import { BindingSource } from './src/bindings.js'
+import { ArchiveSource } from './src/archives.js'
 import { Bridge } from './src/bridge.js'
 import { normalizeConfig } from './src/config.js'
 import { Inbound } from './src/inbound.js'
@@ -41,27 +41,20 @@ export const name = 'dsh-wdd-cat-linker'
  */
 export const inject = ['agents', 'sessions', 'sessionTitle', 'timer', 'workspaceRegistry', 'attachments']
 
-/** 一条绑定 = 一个 QQ 聊天 → 一处 DSH 落点。 */
-const BindingSchema = Schema.object({
-  chatType: Schema.string().default('private').description('private = 私聊，group = 群聊'),
-  chatId: Schema.string().default('').description('私聊填对方 QQ 号，群聊填群号'),
-  target: Schema.string().default('workspace').description('session = 指定会话，workspace = 工作区'),
-  sessionId: Schema.string().default('').description('target=session 时填'),
-  workspaceId: Schema.string().default('').description('target=workspace 时填'),
-  label: Schema.string().default('').description('备注名，方便自己认'),
-  enabled: Schema.boolean().default(true),
-})
-
-/** 用户可配置项：只有 DSH 侧的决策，节奏与策略在 Java。 */
+/**
+ * 用户可配置项：只有 DSH 侧的**接线**决策，节奏与策略在 Java。
+ *
+ * <p><b>存档制度下的变化</b>：`bindings` 与 `workspacePick` 已删除。
+ * 存档完全由 Java 托管，去 `http://127.0.0.1:8080/archives` 管理。
+ * 留在这里会造成「两个来源打架」——当初绑定托管就踩过这个坑。
+ */
 export const Config = Schema.object({
   enabled: Schema.boolean().default(true).description('总开关。关着 = 完全不收发'),
   catBaseUrl: Schema.string().default('http://127.0.0.1:8080').description('本地 Java 中转站地址'),
   catToken: Schema.string().default('').description('中转站开了鉴权才填'),
-  bindings: Schema.array(BindingSchema).default([]).description('QQ 聊天 → DSH 落点'),
-  workspacePick: Schema.string().default('recent').description('recent = 最近有活动的会话，first = 排最前的'),
   relayOutbound: Schema.boolean().default(true).description('DSH → QQ'),
   relayInbound: Schema.boolean().default(true).description('QQ → DSH'),
-  presenceIntervalMs: Schema.number().default(5000).description('心跳间隔（告诉 Java 要拉哪些聊天）'),
+  presenceIntervalMs: Schema.number().default(5000).description('心跳间隔（告诉 Java 要服务哪些存档）'),
   outboxPollMs: Schema.number().default(1500).description('轮询待投递队列的间隔'),
   requestTimeoutMs: Schema.number().default(5000).description('单次请求超时'),
 })
@@ -119,11 +112,17 @@ export function apply(ctx, config) {
   }
 
   // ── 四个业务模块 ────────────────────────────────────────────
-  const bindings = new BindingSource({ getConfig: () => settings, bridge, log })
+  /**
+   * 存档源：从 Java 拉「有哪些存档、各自服务哪些聊天」。
+   *
+   * <p>取代原来的 BindingSource。存档完全由 Java 托管，
+   * 跳板这边只在内存里缓存一份——两个来源会打架。
+   */
+  const archives = new ArchiveSource({ bridge, log })
 
   /**
-   * 轮次来源登记：入站记「这轮谁触发的」，出站据此定向。
-   * 出入站共用同一个实例，所以在这里创建而不是各自 new。
+   * 轮次来源登记：入站记「这轮哪个存档、哪个聊天、哪个通道触发的」，
+   * 出站据此定向。出入站共用同一个实例，所以在这里创建而不是各自 new。
    */
   const origin = new TurnOrigin()
 
@@ -131,6 +130,7 @@ export function apply(ctx, config) {
     getConfig: () => settings,
     resolver,
     bridge,
+    archives,
     origin,
     log,
     attachmentsService,
@@ -140,6 +140,7 @@ export function apply(ctx, config) {
     getConfig: () => settings,
     resolver,
     bridge,
+    archives,
     origin,
     log,
     attachmentsService,
@@ -150,7 +151,7 @@ export function apply(ctx, config) {
     getConfig: () => settings,
     resolver,
     bridge,
-    bindings,
+    archives,
     logger,
   })
 
@@ -207,19 +208,19 @@ export function apply(ctx, config) {
     outbound.dispose()
   }, 'wdd-cat-linker: 卸载清理')
 
-  // ── 启动：拉一次绑定、打印清单、立刻报一次心跳 ───────────────
+  // ── 启动：拉一次存档、打印清单、立刻报一次心跳 ───────────────
   // apply() 不能是 async（cordis 不等它），所以启动逻辑放在自执行块里。
   void (async () => {
-    await bindings.refresh()
+    await archives.refresh()
 
     log(`已装好 v${readVersion()}｜总开关 ${settings.enabled ? '开' : '关'}`
-      + `｜绑定 ${settings.bindings.length} 条`
+      + `｜存档 ${archives.archives.length} 个`
       + `｜中转站 ${settings.catBaseUrl}`)
 
-    if (!settings.bindings.length) {
+    if (!archives.archives.length) {
       log(settings.enabled
-        ? '绑定是空的——链路会停。去 Java 设置页 http://127.0.0.1:8080/settings 加一条'
-        : '还没有绑定：在插件配置里加一条，或去 Java 设置页加（QQ 聊天 → 会话或工作区）')
+        ? '还没有存档——链路会停。去 Java 的 http://127.0.0.1:8080/archives 建一个'
+        : '还没有存档。调通之前建议先关着总开关，确认无误再打开。')
     }
     if (!settings.enabled) {
       log('总开关是关的。调通之前建议先关着，确认无误再打开。')

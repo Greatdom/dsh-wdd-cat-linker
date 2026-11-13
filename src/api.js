@@ -11,8 +11,8 @@ export const API = {
   ack: '/api/v1/dsh/ack',
   /** 一轮回复完成，发往 QQ。 */
   events: '/api/v1/dsh/events',
-  /** 心跳：声明要轮询哪些聊天，顺带上报候选清单与日志。 */
+  /** 心跳：声明要服务哪些存档、各自哪些聊天，顺带上报候选清单与日志。 */
   presence: '/api/v1/dsh/presence',
-  /** 绑定表（以 Java 设置页为准）。 */
-  bindings: '/api/v1/settings/bindings',
+  /** 存档列表（由 Java 托管，取代了原来的 bindings）。 */
+  archives: '/api/v1/archives',
 }

@@ -3,16 +3,20 @@
  *
  * 一轮轮询做这些事：
  *   1. 从 Java 取待投递队列；
- *   2. 按 chatKey 找绑定 → 解析到一间会话（agent 不在内存里就恢复）；
+ *   2. 按 Java 标好的 archiveId（或人际关系白名单）找到**目标存档们**；
  *   3. 正文包成 text 块，图片交给 DSH 附件服务准入；
- *   4. `agent.followup()` 投进会话；
- *   5. **只有投递成功才 ack**。
+ *   4. 对每个存档的会话各 `agent.followup()` 一次；
+ *   5. **全部投递成功才 ack**。
  *
  * 为什么「投递成功才 ack」：ack 会让 Java 把消息从队列移除。先 ack 后投递，
  * 一旦投递失败这条消息就永久丢失；反过来只是下一轮重试，最坏慢一个轮询间隔。
+ *
+ * 为什么是「目标存档们」：设计文档 Q3 允许抢话——同一个群可被多个存档认领，
+ * 都投、都回。
  */
 
 import { API } from './api.js'
+import { CHANNEL_QQ } from './config.js'
 import {
   DELIVERY_SUMMARY_LEN,
   ORIGINAL_MAP_LIMIT,
@@ -27,6 +31,7 @@ export class Inbound {
    * @param {() => object} deps.getConfig
    * @param {import('./resolver.js').SessionResolver} deps.resolver
    * @param {import('./bridge.js').Bridge} deps.bridge
+   * @param {import('./archives.js').ArchiveSource} deps.archives 存档源
    * @param {import('./origin.js').TurnOrigin} deps.origin 轮次来源登记
    * @param {(text: string, meta?: object) => void} deps.log
    * @param {Function} [deps.attachmentsService]
@@ -35,6 +40,7 @@ export class Inbound {
     this.getConfig = deps.getConfig
     this.resolver = deps.resolver
     this.bridge = deps.bridge
+    this.archives = deps.archives
     this.origin = deps.origin
     this.log = deps.log
     this.attachmentsService = deps.attachmentsService
@@ -82,7 +88,8 @@ export class Inbound {
         this.log(`投递 ${message && message.id} 出错：${String((error && error.message) || error)}`)
         outcome = false
       }
-      // true = 已投递；'drop' = 已无绑定，ack 掉避免无限积压；false = 留待下一轮
+      // true = 所有目标都投到了；'drop' = 没存档认领，ack 掉避免无限积压；
+      // false = 至少有一个目标没投到，留待下一轮
       if (outcome === true || outcome === 'drop') acked.push(message.id)
     }
 
@@ -94,41 +101,79 @@ export class Inbound {
   /**
    * 投一条消息。
    *
+   * <p><b>一条消息可能投给多个存档</b>（设计文档 Q3：允许抢话）。
+   * 比如群 20001 同时被「黑猫」和「白猫」认领，两个模拟人都该看到这句话。
+   *
+   * <p>每个目标独立成败：
+   * <ul>
+   *   <li>全部成功 → {@code true}（可以 ack）；</li>
+   *   <li>没人认领 → {@code 'drop'}（也要 ack，否则队列无限积压）；</li>
+   *   <li>有目标没投到 → {@code false}（不 ack，下一轮重试；
+   *       已经投到的会在下一轮被「已处理」挡掉，不会重复投）。</li>
+   * </ul>
+   *
    * @returns {Promise<true|'drop'|false>}
-   *   true 已投递；'drop' 该丢弃（要 ack）；false 暂投不出去（不要 ack）
    */
   async #deliver(message, config) {
     if (!message || !message.id) return 'drop'
 
     const chatKey = String(message.chatKey || '')
-    const binding = config.bindings.find(
-      (item) => item.enabled !== false && `${item.chatType}:${item.chatId}` === chatKey,
-    )
-    if (!binding) {
-      this.log(`${chatKey} 已经没有绑定，丢弃这条（避免队列无限积压）`)
+    // Java 已经在 OutboxItem 里标好了归属存档（存档由 Java 托管，它最清楚）
+    const archiveId = String(message.archiveId || '')
+
+    // 优先按 Java 指定的存档投；没有就按人际关系白名单反查（兼容过渡期）
+    const targets = archiveId
+      ? [this.archives.get(archiveId)].filter(Boolean)
+      : this.archives.forChat(chatKey)
+
+    if (!targets.length) {
+      this.log(`${chatKey} 没有存档认领，丢弃这条（避免队列无限积压）`)
       return 'drop'
     }
 
-    // resume: true —— 真正的投递才值得付出「从磁盘恢复会话」的代价。
-    // 解析结果里已经带上了 agent，不要再去 findAgent 查一遍。
-    const resolved = await this.resolver.resolveTarget(binding, {
-      pick: config.workspacePick,
-      resume: true,
-    })
-    if (resolved.error) {
-      this.log(`${chatKey}：${resolved.error}（留待下一轮）`)
-      return false
-    }
-
-    const { agent, sessionId } = resolved
-    if (!agent || typeof agent.followup !== 'function') {
-      this.log(`${chatKey}：会话 …${shortId(sessionId)} 拿不到 followup（留待下一轮）`)
-      return false
-    }
-
     const content = await this.#buildContent(message)
+    const channel = String(message.channel || CHANNEL_QQ)
+
+    let delivered = 0
+    let failed = 0
+
+    for (const archive of targets) {
+      const ok = await this.#deliverTo(archive, message, chatKey, content, channel)
+      if (ok) delivered++
+      else failed++
+    }
+
+    if (delivered === 0) return false
+    if (failed > 0) {
+      this.log(`${chatKey}：${delivered} 个存档投到，${failed} 个待重试`, { level: 'warn' })
+      return false   // 有失败就不 ack，下一轮补
+    }
+    return true
+  }
+
+  /**
+   * 投给一个存档。
+   *
+   * <p>会话必须能从磁盘恢复出来——存档制度下会话可能被回收，
+   * 但记忆和人设都在 Java，恢复会话不丢任何东西。
+   */
+  async #deliverTo(archive, message, chatKey, content, channel) {
+    const sessionId = archive.sessionId
+    if (!sessionId) {
+      this.log(`存档「${archive.name}」没有绑定会话（${archive.sessionStatus}），跳过`)
+      return false
+    }
+
+    const agent = await this.resolver.resumeAgent(sessionId)
+    if (!agent || typeof agent.followup !== 'function') {
+      this.log(`存档「${archive.name}」的会话 …${shortId(sessionId)} 打不开，留待下一轮`)
+      return false
+    }
+
     const input = {
-      id: `qq-${message.id}`,
+      // ⚠ id 必须带存档后缀：同一条 QQ 消息投给两个存档时，
+      //   两个会话里出现相同 id 会让「按 id 找锚点」的逻辑错乱。
+      id: `qq-${message.id}-${archive.id}`,
       role: 'user',
       content,
       // source.kind 是封闭枚举，没有 'qq'。用 'user' 让 UI 当人话渲染，
@@ -139,17 +184,18 @@ export class Inbound {
     try {
       await agent.followup(input)
     } catch (error) {
-      this.log(`${chatKey}：followup 失败（${String((error && error.message) || error)}）`,
-        { level: 'warn', itemId: String(message.id) })
+      this.log(`${chatKey} → 存档「${archive.name}」：followup 失败（`
+        + String((error && error.message) || error) + '）',
+      { level: 'warn', itemId: String(message.id) })
       return false
     }
 
-    // 记下来源：DSH 这轮回复只该发回这一个聊天。
-    // 不记的话出站无从判断「谁问的」，只能按会话广播，手动说话也拦不住。
-    this.origin.remember(sessionId, chatKey)
+    // 记下来源：DSH 这轮回复只该发回这个聊天，而且要用这个存档的身份发。
+    // 一个存档只绑一间会话，所以 sessionId ↔ archiveId 是一对一的。
+    this.origin.remember(sessionId, { archiveId: archive.id, chatKey, channel })
 
     // itemId 显式带上，让这条日志和 Java 侧的行能按同一 id 归组
-    this.log(`收到 ${chatKey} → 会话 …${shortId(sessionId)}：`
+    this.log(`收到 ${chatKey} → 存档「${archive.name}」会话 …${shortId(sessionId)}：`
       + summarize(message.text, DELIVERY_SUMMARY_LEN), { itemId: String(message.id) })
     return true
   }

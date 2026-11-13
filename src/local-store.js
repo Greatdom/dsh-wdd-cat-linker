@@ -28,14 +28,15 @@ export const ROUTE_PREFIX = '/wdd-cat-linker'
 /**
  * 允许设置页改的键。
  *
- * 与 {@link ../src/config.js} 的 DEFAULT_CONFIG 对应；
- * `bindings` 不在这里 —— 它由 Java 托管，跳板心跳时拉取。
+ * 与 {@link ../src/config.js} 的 DEFAULT_CONFIG 对应。
+ *
+ * <b>存档不在这里</b>：它由 Java 完全托管（`/archives` 页面），
+ * 跳板心跳时拉取。存两份会打架。
  */
 export const EDITABLE_KEYS = Object.freeze([
   'enabled',
   'catBaseUrl',
   'catToken',
-  'workspacePick',
   'relayOutbound',
   'relayInbound',
   'presenceIntervalMs',

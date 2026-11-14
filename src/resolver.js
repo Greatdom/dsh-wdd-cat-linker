@@ -190,19 +190,61 @@ export class SessionResolver {
     return this.workspace.pickSession(workspaceId, pick, snapshot || this.snapshotSessions())
   }
 
-  /** 会话显示名（日志用）。 */
+  /**
+   * 会话显示名 —— 存档管理页的下拉框要用它。
+   *
+   * <p>取名的顺序（能拿到就用）：
+   * <ol>
+   *   <li>{@code sessionTitle.get({id})} —— DSH 的标题服务，最准；</li>
+   *   <li>{@code sessions.get(id).title} —— 会话对象自带的标题（兜底，
+   *       有些版本标题就挂在会话上而不在 title 服务里）；</li>
+   *   <li>短 id —— 都没有时的最后手段。</li>
+   * </ol>
+   *
+   * <p>返回空串表示「确实没有名字」，由调用方决定怎么兜底 ——
+   * 不在这里返回「（未设置）」这类占位词，否则上层没法区分「没名字」和「名字就叫这个」。
+   *
+   * @returns {string} 会话名；拿不到返回 ''
+   */
   sessionTitle(sessionId) {
+    const raw = String(sessionId == null ? '' : sessionId).trim()
+    if (!raw) return ''
+
+    // ① 标题服务
     try {
       const service = this.#service('sessionTitle')
       if (service && typeof service.get === 'function') {
-        const snapshot = service.get({ id: sessionId })
-        if (snapshot && snapshot.title) return String(snapshot.title)
+        const snapshot = service.get({ id: raw })
+        const title = snapshot && snapshot.title
+        if (title && String(title).trim()) return String(title).trim()
       }
     } catch {
-      // ignore
+      // 退到下一种来源
     }
-    const key = sessionKey(sessionId)
-    return key ? '…' + shortId(key) : '（未设置）'
+
+    // ② 会话对象自带的标题
+    try {
+      const sessions = this.#service('sessions')
+      if (sessions && typeof sessions.get === 'function') {
+        for (const id of idVariants(raw)) {
+          const s = sessions.get(id)
+          if (s) {
+            const title = s.title || s.name
+            if (title && String(title).trim()) return String(title).trim()
+          }
+        }
+      }
+    } catch {
+      // 退到短 id
+    }
+
+    return ''
+  }
+
+  /** 日志里用的会话标签：有名字用名字，没有就短 id。 */
+  sessionLabel(sessionId) {
+    const title = this.sessionTitle(sessionId)
+    return title || '…' + shortId(sessionId)
   }
 
   // ─────────────────────────── 统一解析入口 ───────────────────────────

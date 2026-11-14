@@ -179,23 +179,23 @@ export class Presence {
     return false
   }
 
-  /** 会话 / 工作区候选清单，供存档管理页的下拉框使用。 */
+  /**
+   * 会话 / 工作区候选清单，供存档管理页的下拉框使用。
+   *
+   * <p><b>列出全部会话，不只是有活 agent 的。</b>
+   * 存档要绑的会话「存在」就够 —— 现在没打开不代表不能用，用到时会恢复。
+   * 只列活着的会导致：新建存档时刚建的会话选不到、切走过的会话从列表里消失。
+   *
+   * <p>`alive` 仍报上去，但只作为提示（页面标「未打开」），不参与过滤。
+   */
   #candidates() {
-    const live = new Set(this.resolver.liveSessionIds().map(sessionKey))
-    const archived = this.resolver.archivedSessionKeys()
-
-    const sessions = []
-    const seen = new Set()
-    for (const id of this.resolver.liveSessionIds()) {
-      const key = sessionKey(id)
-      if (!key || seen.has(key)) continue
-      seen.add(key)
-      sessions.push({
-        id,
-        title: this.resolver.sessionTitle(id),
-        alive: live.has(key) && !archived.has(key),
-      })
-    }
+    const sessions = this.resolver.allSessions().map((s) => ({
+      id: s.id,
+      // 会话在 DSH 里显示的名字
+      title: s.title,
+      // 是否当前有活 agent（没打开 ≠ 无效）
+      alive: s.alive && !s.archived,
+    }))
 
     const workspaces = this.resolver.listWorkspaces().map((ws) => ({
       id: ws.id,

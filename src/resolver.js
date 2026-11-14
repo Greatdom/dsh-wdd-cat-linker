@@ -58,6 +58,64 @@ export class SessionResolver {
   }
 
   /**
+   * **全部**会话 id（不只是有活 agent 的）。
+   *
+   * <p>为什么要单独一个方法：DSH 的 agent 按需创建、用完回收，
+   * `agents.list()` 只返回<b>内存里还挂着</b>的那些。而存档要绑的会话
+   * 是「存在」就够——它现在没打开不代表不能用，用到时会恢复。
+   *
+   * <p>数据来源（按可靠性排序，能拿到就合并）：
+   * <ol>
+   *   <li>{@code sessions.list()} —— 直接的会话清单；</li>
+   *   <li>{@code workspaceRegistry.list()[].sessionIds} —— 工作区记着的会话；</li>
+   *   <li>{@link #liveSessionIds} —— 活 agent（兜底，保证不漏掉正在用的）。</li>
+   * </ol>
+   *
+   * @returns {Array<{id: string, title: string, alive: boolean, archived: boolean}>}
+   */
+  allSessions() {
+    const byKey = new Map()
+
+    const add = (rawId) => {
+      const id = String(rawId == null ? '' : rawId).trim()
+      if (!id) return
+      const key = sessionKey(id)
+      if (!key || byKey.has(key)) return
+      byKey.set(key, id)
+    }
+
+    // ① 直接的会话清单
+    const sessions = this.#service('sessions')
+    if (sessions && typeof sessions.list === 'function') {
+      try {
+        for (const s of sessions.list() || []) {
+          add((s && s.id) || (s && s.sessionId))
+        }
+      } catch {
+        // 拿不到就退到下一种来源
+      }
+    }
+
+    // ② 工作区里的 sessionIds
+    for (const ws of this.workspace.list()) {
+      for (const id of ws.sessionIds) add(id)
+    }
+
+    // ③ 活 agent（兜底）
+    for (const id of this.liveSessionIds()) add(id)
+
+    const live = new Set(this.liveSessionIds().map(sessionKey))
+    const archived = this.workspace.archivedKeys()
+
+    return [...byKey.entries()].map(([key, id]) => ({
+      id,
+      title: this.sessionTitle(id),
+      alive: live.has(key),
+      archived: archived.has(key),
+    }))
+  }
+
+  /**
    * 只查内存里的 agent，两种 id 写法都试。**不触发恢复。**
    * @returns {object|undefined}
    */

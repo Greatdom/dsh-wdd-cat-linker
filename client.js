@@ -1,0 +1,1 @@
+/** client.js 从api.js得到url,从asset文件夹得到资产 */

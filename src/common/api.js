@@ -10,7 +10,7 @@ export const API = {
   /** 存档列表（由 Java 托管，取代了原来的 bindings）。 */
   archives: '/api/archives',
   /** 生成日程并返回ack */
-  date: '/api/date',
+  // date: '/api/date',
   /** 检测连接健康状态 */
   health:'/api/health'
 }

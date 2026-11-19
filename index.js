@@ -2,9 +2,8 @@
  * DSH ↔ 服务器跳板 —— 插件入口。
  *
  * 本文件只做装配，不含业务判断：
- *   ① 心跳：告诉 Java「这些会话我能服务」；
- *   ② 入站：取 Java 队列 → ack → followup 进 DSH 会话；
- *   ③ 存档快照：从 Java 拉一份只读缓存。
+ *   ① 心跳：告诉 Java「这些会话我能服务」，连同会话名；
+ *   ② 入站：取 Java 队列 → ack → followup 进 DSH 会话。
  *
  * Java 中转站（cat）承担全部业务：OneBot 通信、消息段翻译、合并、
  * 攒批、限流、图片处理、身份与提示词渲染。
@@ -92,11 +91,6 @@ export function apply(ctx, config) {
     if (!settings.enabled) return
     void inbound.tick()
   }, settings.inboundIntervalMs)
-
-  // 存档快照变化不快，跟着心跳节奏刷就行
-  ctx.interval(() => {
-    if (!settings.enabled) return
-  }, settings.heartbeatIntervalMs * 6)
 
   // ── 卸载清理 ──────────────────────────────────────────────
   ctx.effect(() => () => {

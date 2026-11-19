@@ -32,6 +32,13 @@ export class SessionFinder {
     this.ctx = ctx
     /** 取到的服务缓存：插件生命周期内不变。 */
     this.services = new Map()
+    /**
+     * 全局的 sessionId → 会话名缓存。
+     *
+     * 拿到一次名字就不再 resume —— 没活 agent 的会话每次 resume 都是真读盘。
+     * 按约定永久缓存，会话改名后这里不跟进，要等插件重启。
+     */
+    this.titleCache = new Map()
   }
 
   /** 兼容 ctx.get(name) 与 ctx[name] 两种写法。 */
@@ -52,21 +59,34 @@ export class SessionFinder {
    * 全部会话，含没加载到内存的。
    *
    * 与「有活 agent 的会话」不同：DSH 的 agent 按需创建、用完回收，
-   * agents.list() 只返回内存里挂着的那些。心跳要报的是「存在」而不是「现在活着」，
-   * 所以这里逐个 resumeAgent，拿回来的 agent 里带会话名。
+   * agents.list() 只返回内存里挂着的那些。心跳要报的是「存在」而不是「现在活着」。
+   *
+   * 名字走 titleCache，拿到一次就不再 resume。
+   * 拿不到名字的会话不缓存 —— 否则一次临时打不开会被永久当成「没名字」。
    *
    * @returns {Promise<Map<string, string>>} sessionId → 会话名（拿不到名字时给空串）
    */
   async getAllSessions() {
-    const ids = this.#candidateSessionIds()
     const out = new Map()
 
-    for (const sessionId of ids) {
+    for (const sessionId of this.#candidateSessionIds()) {
+      const cached = this.titleCache.get(sessionId)
+      if (cached !== undefined) {
+        out.set(sessionId, cached)
+        continue
+      }
       const agent = await this.resumeAgent(sessionId)
+      const title = agent ? this.#sessionTitle(agent) : ''
+      if (title) this.titleCache.set(sessionId, title)
       // 恢复不出来的会话也照样报上去
-      out.set(sessionId, agent ? this.#sessionTitle(agent, sessionId) : '')
+      out.set(sessionId, title)
     }
     return out
+  }
+  /** 从 agent 上取会话名；取不到返回空串。 */
+  #sessionTitle(agent) {
+    const title = agent && agent.session && agent.session.title
+    return title && String(title).trim() ? String(title).trim() : ''
   }
 
   /** 会话 id 候选：活 agent + 会话服务 + 工作区记着的。 */
@@ -105,12 +125,7 @@ export class SessionFinder {
     return [...ids]
   }
 
-  /** 从 agent 上取会话名；取不到返回空串。 */
-  #sessionTitle(agent, sessionId) {
-    const fromAgent = agent && agent.session && agent.session.title
-    if (fromAgent && String(fromAgent).trim()) return String(fromAgent).trim()
-    return ''
-  }
+  
 
   /** 只查内存里的 agent，两种 id 写法都试。不触发恢复。 */
   findAgent(sessionId) {

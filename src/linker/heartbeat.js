@@ -8,8 +8,7 @@ import { API } from '../common/api.js'
  * 这是整条链的总闸 —— Java 侧 DedupProcessor 第 ⓪ 道校验对空清单是全拒。
  * 心跳不发，DSH 里永远收不到消息。
  *
- * 语义是整体覆盖：这次报上来的就是全部。
- * 报的会话包含没加载到内存的（见 SessionFinder.getAllSessions）。
+ * 报上去的是 sessionId → 会话名，语义为整体覆盖。
  */
 export class Heartbeat {
   /**
@@ -25,6 +24,8 @@ export class Heartbeat {
     /** 正在跑的一轮（single-flight）。 */
     this.running = null
     this.stopped = false
+    /** 最近一次算出的会话表，inbound 用它的键去取消息。 */
+    this.sessions = new Map()
     /** 上次报上去的清单，没变就不重复刷日志。 */
     this.lastReported = null
     this.failed = false
@@ -45,11 +46,11 @@ export class Heartbeat {
   }
 
   async #run() {
-    /** 最近一次算出的会话表，inbound 用它的键去取消息。 */
-    this.sessions = new Map()
     this.sessions = await this.finder.getAllSessions()
+
     try {
-      await this.bridge.post(API.heartbeat, { this:sessions })
+      // Map 直接进 JSON.stringify 会变成 {}，必须先转普通对象
+      await this.bridge.post(API.heartbeat, { sessions: Object.fromEntries(this.sessions) })
     } catch (error) {
       if (!this.failed) {
         this.log('心跳上报失败（中转站没起来？）：' + String((error && error.message) || error))
@@ -59,10 +60,10 @@ export class Heartbeat {
     }
     this.failed = false
 
-    const key = sessionIds.join(',')
+    const key = [...this.sessions.keys()].join(',')
     if (key !== this.lastReported) {
       this.lastReported = key
-      this.log(`心跳：报上 ${sessionIds.length} 个可用会话`)
+      this.log(`心跳：报上 ${this.sessions.size} 个可用会话`)
     }
   }
 

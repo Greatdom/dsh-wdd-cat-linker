@@ -18,8 +18,6 @@ export const API = {
   /** 心跳：声明要服务哪些存档、各自哪些聊天，顺带上报候选清单与日志。 */
   /**第一版只传会话 */
   heartbeat: '/api/heartbeat',
-  /** 存档列表,由 Java 托管。 */
-  archives: '/api/archives',
   /** 检测连接健康状态 */
   health: '/api/health'
 }

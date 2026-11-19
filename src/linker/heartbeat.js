@@ -8,7 +8,8 @@ import { API } from '../common/api.js'
  * 这是整条链的总闸 —— Java 侧 DedupProcessor 第 ⓪ 道校验对空清单是全拒。
  * 心跳不发，DSH 里永远收不到消息。
  *
- * 语义是**整体覆盖**：这次报上来的就是全部。
+ * 语义是整体覆盖：这次报上来的就是全部。
+ * 报的会话包含没加载到内存的（见 SessionFinder.getAllSessions）。
  */
 export class Heartbeat {
   /**
@@ -44,10 +45,11 @@ export class Heartbeat {
   }
 
   async #run() {
-    const sessionIds = this.finder.liveSessionIds()
-
+    /** 最近一次算出的会话表，inbound 用它的键去取消息。 */
+    this.sessions = new Map()
+    this.sessions = await this.finder.getAllSessions()
     try {
-      await this.bridge.post(API.heartbeat, { sessionIds })
+      await this.bridge.post(API.heartbeat, { this:sessions })
     } catch (error) {
       if (!this.failed) {
         this.log('心跳上报失败（中转站没起来？）：' + String((error && error.message) || error))

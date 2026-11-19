@@ -48,18 +48,68 @@ export class SessionFinder {
     return value
   }
 
-  /** 当前有活 agent 的会话 id。心跳报的就是这个清单。 */
-  liveSessionIds() {
-    const agents = this.#service('agents')
-    if (!agents || typeof agents.list !== 'function') return []
-    try {
-      return (agents.list() || [])
-        .map((agent) => (agent && agent.session && agent.session.id) || (agent && agent.sessionId))
-        .filter(Boolean)
-        .map(String)
-    } catch {
-      return []
+  /**
+   * 全部会话，含没加载到内存的。
+   *
+   * 与「有活 agent 的会话」不同：DSH 的 agent 按需创建、用完回收，
+   * agents.list() 只返回内存里挂着的那些。心跳要报的是「存在」而不是「现在活着」，
+   * 所以这里逐个 resumeAgent，拿回来的 agent 里带会话名。
+   *
+   * @returns {Promise<Map<string, string>>} sessionId → 会话名（拿不到名字时给空串）
+   */
+  async getAllSessions() {
+    const ids = this.#candidateSessionIds()
+    const out = new Map()
+
+    for (const sessionId of ids) {
+      const agent = await this.resumeAgent(sessionId)
+      // 恢复不出来的会话也照样报上去
+      out.set(sessionId, agent ? this.#sessionTitle(agent, sessionId) : '')
     }
+    return out
+  }
+
+  /** 会话 id 候选：活 agent + 会话服务 + 工作区记着的。 */
+  #candidateSessionIds() {
+    const ids = new Set()
+
+    const add = (raw) => {
+      const id = String(raw == null ? '' : raw).trim()
+      if (id) ids.add(id)
+    }
+
+    // ① 有活 agent 的
+    const agents = this.#service('agents')
+    if (agents && typeof agents.list === 'function') {
+      try {
+        for (const agent of agents.list() || []) {
+          add((agent && agent.session && agent.session.id) || (agent && agent.sessionId))
+        }
+      } catch {
+        // 退到下一种来源
+      }
+    }
+
+    // ② 会话服务的全部清单
+    const sessions = this.#service('sessions')
+    if (sessions && typeof sessions.list === 'function') {
+      try {
+        for (const s of sessions.list() || []) {
+          add((s && s.id) || (s && s.sessionId))
+        }
+      } catch {
+        // 退到下一种来源
+      }
+    }
+
+    return [...ids]
+  }
+
+  /** 从 agent 上取会话名；取不到返回空串。 */
+  #sessionTitle(agent, sessionId) {
+    const fromAgent = agent && agent.session && agent.session.title
+    if (fromAgent && String(fromAgent).trim()) return String(fromAgent).trim()
+    return ''
   }
 
   /** 只查内存里的 agent，两种 id 写法都试。不触发恢复。 */

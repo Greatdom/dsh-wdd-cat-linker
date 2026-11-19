@@ -116,15 +116,25 @@ export class Inbound {
       return
     }
 
+    // 正文里带上来源，模型才知道这轮该用 submit_replies 回出去，
+    // 而不是当成界面上的闲聊。
+    const prompt = `【来自外部聊天】${message.chatType === 'group' ? '群聊' : '私聊'}`
+      + ` ${message.chatId}，发送者 ${message.senderName || message.senderId || '未知'}：\n`
+      + `${text}\n\n`
+      + '（回复必须调用 submit_replies 工具，否则对方收不到。）'
+
     await agent.followup({
       // id 带上存档后缀：同一条消息投给多个存档时不会撞
       //TODO 不一定是qq-开头,因为以后会接入多渠道消息
       id: `qq-${message.channelMessageId}-${message.archiveId}`,
       role: 'user',
-      content: [{ type: 'text', text }],
+      content: [{ type: 'text', text: prompt }],
       // source.kind 是封闭枚举，没有 'qq'；用 'user' 让 UI 当人话渲染
       source: { kind: 'user' },
     })
+
+    // 投进去了才标记：这一轮等着被回复
+    this.cache.markPending(message)
 
     this.log(`收到 ${message.chatType}:${message.chatId} → 会话 …${shortId(sessionId)}：`
       + summarize(text))

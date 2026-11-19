@@ -34,13 +34,17 @@ export class Outbound {
   /** 工具交卷时调用，先攒着，等 turn/end 再统一发。 */
   submit(draft) {
     if (!draft || !draft.sessionId) return
+    this.log(`交卷 ${draft.replies.length} 条（会话 …${draft.sessionId.slice(-8)}）`)
     this.drafts.set(draft.sessionId, draft)
   }
 
   /** 挂到 ctx.on('session/event')。 */
   handleSessionEvent(session, event) {
     if (!event || event.type !== SESSION_EVENT.turnEnd) return
-    const sessionId = String((session && session.id) || '')
+    // 会话 id 三种写法都试：session.id / session.sessionId / 事件里带的
+    const sessionId = String(
+      (session && (session.id || session.sessionId)) || ''
+    ).trim()
     if (!sessionId) return
     void this.#finishTurn(sessionId, event.data || {})
   }
@@ -50,22 +54,34 @@ export class Outbound {
     // 不论成败都清空，下一轮重新交卷
     this.drafts.delete(sessionId)
 
-    const completed = Boolean(data.reason && data.reason.kind === TURN_REASON.completed)
-    if (!completed || !draft || !draft.replies.length) return
+    // reason 可能在 data 里，也可能直接挂在事件上，两种都认
+    const reason = (data && data.reason) || data
+    const completed = Boolean(reason && reason.kind === TURN_REASON.completed)
+    if (!completed) {
+      this.log(`会话 …${sessionId.slice(-8)} 这一轮没正常完成（reason=${reason && reason.kind}），不发`)
+      return
+    }
+    if (!draft || !draft.replies.length) {
+      this.log(`会话 …${sessionId.slice(-8)} 这一轮没有交卷内容，不发`)
+      return
+    }
 
+    // 这一轮是不是外部消息触发的：没有 pending 就是用户直接聊天，一个字都不发。
+    // takePending 取一次就没，所以一轮只对应一条入站消息。
+    const origin = this.cache.takePending(sessionId)
+    if (!origin) {
+      this.log(`会话 …${sessionId.slice(-8)} 这一轮由界面直接触发，不发到外部`)
+      return
+    }
+
+    const archiveId = String(origin.archiveId || '')
     const messages = draft.replies.map((r, index) => ({
-      chatType: r.chatType,
-      chatId: r.chatId,
+      // 模型没填就沿用收到的消息
+      chatType: r.chatType || origin.chatType || '',
+      chatId: r.chatId || origin.chatId || '',
       text: r.text,
       index,
     }))
-
-    const inbound = this.cache.inboundOfSession(sessionId)
-    const archiveId = inbound.length ? String(inbound[inbound.length - 1].archiveId) : ''
-    if (!archiveId) {
-      this.log(`会话 …${sessionId.slice(-8)} 找不到对应的入站消息，这一轮不发`)
-      return
-    }
 
     // 先落出站池：推失败也不丢
     this.cache.putOutbound(sessionId, archiveId, messages)

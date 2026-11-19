@@ -16,6 +16,8 @@ export class MessageCache {
   constructor() {
     /** inboundId → 入站消息。键用 archiveId + channelMessageId。 */
     this.inbound = new Map()
+    /** sessionId → 这个会话最近一条「已投进 DSH、还没被回复掉」的入站消息。 */
+    this.pending = new Map()
     /** 出站待推队列，保持投递顺序。 */
     this.outbound = []
   }
@@ -42,11 +44,36 @@ export class MessageCache {
     return out
   }
 
+  /**
+   * 一条消息已经投进 DSH，等着被回复。
+   *
+   * 这是「这一轮到底该不该发到外部」的唯一依据：
+   * 有 pending = 外部消息触发的一轮，交卷要发出去；
+   * 没 pending = 用户在界面上直接聊天，交卷要么不发，要么就当没交。
+   */
+  markPending(message) {
+    if (!message || !message.sessionId) return
+    this.pending.set(message.sessionId, message)
+  }
+
+  /** 取走这个会话的 pending，取一次就没了（一轮只对应一条入站）。 */
+  takePending(sessionId) {
+    const message = this.pending.get(sessionId)
+    if (message) this.pending.delete(sessionId)
+    return message
+  }
+
+  /** 只看不取。 */
+  peekPending(sessionId) {
+    return this.pending.get(sessionId)
+  }
+
   /** 一轮回复已经推出去了，把对应的入站清掉。 */
   dropInbound(sessionId) {
     for (const [key, message] of this.inbound) {
       if (message.sessionId === sessionId) this.inbound.delete(key)
     }
+    this.pending.delete(sessionId)
   }
 
   inboundSize() {

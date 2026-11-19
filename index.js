@@ -80,10 +80,26 @@ export function apply(ctx, config) {
   }
 
   // ── 出站：监听一轮结束 ────────────────────────────────────
-  ctx.on('session/event', (session, event) => {
-    if (!settings.enabled) return
-    outbound.handleSessionEvent(session, event)
-  })
+  // 必须用 ctx.effect 包着：裸 ctx.on 拿不到插件的生命周期，
+  // 回调可能永远不触发，而且卸载时不会解绑。
+  ctx.effect(() => {
+    const dispose = ctx.on('session/event', (session, event) => {
+      if (!settings.enabled) return
+      try {
+        outbound.handleSessionEvent(session, event)
+      } catch (error) {
+        // 单个事件出错绝不能把宿主的事件总线搞崩
+        log('处理会话事件出错：' + String((error && error.message) || error))
+      }
+    })
+    return () => {
+      try {
+        if (typeof dispose === 'function') dispose()
+      } catch {
+        // ignore
+      }
+    }
+  }, 'dsh-wdd-cat-linker: 出站监听会话事件')
 
   // ── 定时器 ────────────────────────────────────────────────
   if (typeof ctx.interval !== 'function') {

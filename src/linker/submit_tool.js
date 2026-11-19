@@ -23,8 +23,10 @@ export function createSubmitRepliesTool({ onSubmit, log }) {
   return defineTool({
     name: SUBMIT_REPLIES,
     description:
-      '交出这一轮要发出去的话。想说几句就写几条，每条一句话；'
-      + '不想说话就传空数组。这一步交完就结束本轮，不要再用普通文本回复。',
+      '把回复发到外部聊天（QQ）的唯一通道。'
+      + '只有本轮由外部聊天消息触发时（提示里会写明来自谁、发在哪）才用它，'
+      + '此时回复必须全部走这里，不能只用普通文本，否则对方收不到。'
+      + '如果本轮是用户在界面上直接对话、没有外部来源，就不要调用，正常用文本回答。',
     parameters: {
       replies: {
         type: 'array',
@@ -67,7 +69,13 @@ export function createSubmitRepliesTool({ onSubmit, log }) {
     },
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      const sessionId = String((exec && exec.session && exec.session.id) || '')
+      // exec 的形状随版本不同，几种写法都试一遍
+      const sessionId = String(
+        (exec && exec.session && (exec.session.id || exec.session.sessionId))
+        || (exec && exec.sessionId)
+        || (exec && exec.agent && exec.agent.session && exec.agent.session.id)
+        || ''
+      ).trim()
       const replies = Array.isArray(args && args.replies) ? args.replies : []
 
       const accepted = replies.filter((r) => r && String(r.text || '').trim())
@@ -81,7 +89,6 @@ export function createSubmitRepliesTool({ onSubmit, log }) {
         })),
       })
 
-      log(`交卷 ${accepted.length} 条（会话 …${sessionId.slice(-8)}）`)
       return { accepted: accepted.length, sessionId }
     },
     presentCall: (args) => ({

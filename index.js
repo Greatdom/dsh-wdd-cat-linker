@@ -3,7 +3,8 @@
  *
  * 本文件只做装配，不含业务判断：
  *   ① 心跳：告诉 Java「这些会话我能服务」，连同会话名；
- *   ② 入站：取 Java 队列 → ack → followup 进 DSH 会话。
+ *   ② 入站：取 Java 队列 → 落池 → ack → followup 进 DSH 会话；
+ *   ③ 出站：模型调 submit_replies 交卷 → turn/end 时推回 Java → 按 ack 清缓存。
  *
  * Java 中转站（cat）承担全部业务：OneBot 通信、消息段翻译、合并、
  * 攒批、限流、图片处理、身份与提示词渲染。
@@ -13,7 +14,10 @@ import Schema from '@deepseek-ai/schemastery'
 
 import { Heartbeat } from './src/linker/heartbeat.js'
 import { Inbound } from './src/linker/inbound.js'
+import { Outbound } from './src/linker/outbound.js'
 import { Bridge } from './src/linker/bridge.js'
+import { createSubmitRepliesTool } from './src/linker/submit_tool.js'
+import { MessageCache } from './src/common/message_cache.js'
 import { SessionFinder } from './src/common/session_finder.js'
 import {
   HEARTBEAT_INTERVAL_MS,
@@ -28,7 +32,7 @@ export const name = 'dsh-wdd-cat-linker'
  * 依赖注入清单。少一个都会让插件不激活，所以只列真正用到的。
  * sessionController 不在这里：它通过 ctx.get() 惰性取，缺失只降级成「不恢复会话」。
  */
-export const inject = ['agents', 'timer']
+export const inject = ['agents', 'timer', 'tools']
 
 export const Config = Schema.object({
   enabled: Schema.boolean().default(true).description('总开关。关着 = 完全不收发'),
@@ -40,15 +44,6 @@ export const Config = Schema.object({
   requestTimeoutMs: Schema.number().default(REQUEST_TIMEOUT_MS)
     .description('单次请求超时（毫秒）'),
 })
-//注册相关插件,其中:
-
-//当接收到消息之后缓存到池子里并向中转站返回到ack
-//注册一个工具,这个工具强制让dsh输出成能够和InboundMessage组装成E:\程序代码\dsh\cat\src\main\java\com\wdd\cat\message\child\OutboundMessage.java的格式的json
-// (当然并不是和真正的outboundMessage完全匹配,因为业务在回复完成后还要和原来的InboundMessage拼接成完整的数据结构)
-//推理之前强制抹除原来的上下文及其历史并根据InboundMessage的内容注入新的提示词
-//如果dsh在推理中检测到可能要调用到日程工具或者记忆工具,就要拦截掉并根据从中转站得到的渠道能力自行在json回复中追加送往特定渠道的消息
-//例如如果模型推理检测到要加日程,那么在调用内置日程根据时根据代码被拦截并根据渠道能力表强制在json追加某个叫做ADD_DATE的渠道的NormalMessage并入OutboundMessage
-//最后将模型输出的json转换成期望的数据结构,先缓存到出站缓冲池,,接着送回中转站处理
 
 export function apply(ctx, config) {
   const settings = { ...Config(), ...(config || {}) }
@@ -67,17 +62,34 @@ export function apply(ctx, config) {
     timeoutMs: settings.requestTimeoutMs,
   })
   const finder = new SessionFinder(ctx)
+  const cache = new MessageCache()
 
   // ── 三个业务件 ────────────────────────────────────────────
   const heartbeat = new Heartbeat({ bridge, finder, log })
-  const inbound = new Inbound({ bridge, finder, log })
+  const inbound = new Inbound({ bridge, finder, cache, log })
+  const outbound = new Outbound({ bridge, cache, log })
 
+  // ── 交卷工具 ──────────────────────────────────────────────
+  if (ctx.tools && typeof ctx.tools.register === 'function') {
+    ctx.tools.register(createSubmitRepliesTool({
+      onSubmit: (draft) => outbound.submit(draft),
+      log,
+    }))
+  } else {
+    log('宿主没提供 tools 服务 —— 模型无法交卷，出站不可用')
+  }
+
+  // ── 出站：监听一轮结束 ────────────────────────────────────
+  ctx.on('session/event', (session, event) => {
+    if (!settings.enabled) return
+    outbound.handleSessionEvent(session, event)
+  })
+
+  // ── 定时器 ────────────────────────────────────────────────
   if (typeof ctx.interval !== 'function') {
     log('宿主没提供 timer（ctx.interval 不存在）—— QQ → DSH 收不到消息')
     return
   }
-
-  // ── 定时器 ────────────────────────────────────────────────
   // ctx.interval 内部已托管清理，不要再包 ctx.effect。
   ctx.interval(() => {
     if (!settings.enabled) return
@@ -96,12 +108,12 @@ export function apply(ctx, config) {
   ctx.effect(() => () => {
     heartbeat.dispose()
     inbound.dispose()
+    outbound.dispose()
   }, 'dsh-wdd-cat-linker: 卸载清理')
 
-  // ── 启动：拉一次存档、立刻报一次心跳 ──────────────────────
+  // ── 启动：立刻报一次心跳 ──────────────────────────────────
   // apply() 不能是 async（cordis 不等它），所以放自执行块。
   void (async () => {
-
     if (!settings.enabled) {
       log('总开关是关的，不发心跳也不取消息')
       return

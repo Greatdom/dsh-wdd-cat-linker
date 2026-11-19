@@ -18,11 +18,13 @@ export class Inbound {
    * @param {object} deps
    * @param {import('../linker/bridge.js').Bridge} deps.bridge
    * @param {import('../common/session_finder.js').SessionFinder} deps.finder
+   * @param {import('../common/message_cache.js').MessageCache} deps.cache
    * @param {(text: string, meta?: object) => void} deps.log
    */
-  constructor({ bridge, finder, log }) {
+  constructor({ bridge, finder, cache, log }) {
     this.bridge = bridge
     this.finder = finder
+    this.cache = cache
     this.log = log
     /** 正在跑的一轮（single-flight，防止同一批消息被投两次）。 */
     this.running = null
@@ -59,7 +61,12 @@ export class Inbound {
       : []
     if (!messages.length) return
 
-    // 先 ack：拿到就算投递成功，后面会话在不在另说
+    // 先落池再发：发不出去也不会丢
+    for (const message of messages) {
+      this.cache.putInbound(message)
+    }
+
+    // 再 ack：拿到就算投递成功，后面会话在不在另说
     await this.#ack(messages)
 
     for (const message of messages) {

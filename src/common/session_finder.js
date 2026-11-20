@@ -22,16 +22,28 @@ export function idVariants(raw) {
 
 /**
  * 会话查找：从 DSH 宿主拿到 agent 和会话清单。
+ *
+ * <p>枚举会话与取名字都走 {@code sessionQuery} —— 它能读磁盘上的全部会话，
+ * 不要求会话打开着：
+ * <ul>
+ *   <li>{@code listSessions()} —— 全部会话；</li>
+ *   <li>{@code readTitle(id)} —— 从会话日志里折叠出标题，没打开的也行。</li>
+ * </ul>
+ *
+ * <p>{@code agents.list()} 只返回内存里挂着的 agent，只能当兜底 ——
+ * 存档要绑的会话是「存在」就够，现在没打开不代表不能用。
  */
 export class SessionFinder {
-  /** @param {object} ctx cordis 上下文 */
-  constructor(ctx) {
+  /**
+   * @param {object} ctx cordis 上下文
+   * @param {(text: string) => void} [log] 日志口，排障时用
+   */
+  constructor(ctx, log) {
     this.ctx = ctx
+    this.log = log || null
     /** 取到的服务缓存：插件生命周期内不变。 */
     this.services = new Map()
-    /**
-     * 全局的 sessionId → 会话名缓存。
-     */
+    /** 全局的 sessionId → 会话名缓存。 */
     this.titleCache = new Map()
   }
 
@@ -45,7 +57,10 @@ export class SessionFinder {
       value = undefined
     }
     if (value === undefined || value === null) value = this.ctx[name]
-    this.services.set(name, value)
+    // 只缓存拿到的：服务可能比插件晚就绪，把 undefined 缓存住就永远拿不到了
+    if (value !== undefined && value !== null) {
+      this.services.set(name, value)
+    }
     return value
   }
 
@@ -57,14 +72,18 @@ export class SessionFinder {
   async getAllSessions() {
     const out = new Map()
 
-    for (const id of this.allSessionIds()) {
+    for (const id of await this.allSessionIds()) {
       const cached = this.titleCache.get(id)
       if (cached) {
         out.set(id, cached)
         continue
       }
-      const title = this.sessionTitle(id)
-      if (title) this.titleCache.set(id, title)
+      const title = await this.sessionTitle(id, true)
+      if (title) {
+        this.titleCache.set(id, title)
+      } else if (this.log) {
+        this.log(`会话 ${shortId(id)} 取不到名字`)
+      }
       // 拿不到名字也照样报上去 —— 会话本身是存在的
       out.set(id, title)
     }
@@ -74,16 +93,9 @@ export class SessionFinder {
   /**
    * **全部**会话 id（不只是有活 agent 的）。
    *
-   * <p>数据来源（按可靠性排序，能拿到就合并）：
-   * <ol>
-   *   <li>{@code sessions.list()} —— 直接的会话清单；</li>
-   *   <li>{@code workspaceRegistry.list()[].sessionIds} —— 工作区记着的会话；</li>
-   *   <li>{@code agents.list()} —— 活 agent（兜底，保证不漏掉正在用的）。</li>
-   * </ol>
-   *
-   * @returns {string[]}
+   * @returns {Promise<string[]>}
    */
-  allSessionIds() {
+  async allSessionIds() {
     const byKey = new Map()
 
     const add = (rawId) => {
@@ -94,35 +106,71 @@ export class SessionFinder {
       byKey.set(key, id)
     }
 
-    // ① 直接的会话清单
-    const sessions = this.#service('sessions')
-    if (sessions && typeof sessions.list === 'function') {
+    // ① sessionQuery.listSessions() —— 磁盘上所有会话，含没打开的
+    const query = this.#service('sessionQuery')
+    if (query && typeof query.listSessions === 'function') {
       try {
-        for (const s of sessions.list() || []) {
+        const list = await query.listSessions()
+        // 有的版本给数组，有的包一层 { sessions: [...] }
+        const rows = Array.isArray(list)
+          ? list
+          : (list && Array.isArray(list.sessions) ? list.sessions : [])
+        if (this.log) {
+          this.log(`listSessions 返回 ${describe(list)}，解析出 ${rows.length} 条`)
+        }
+        for (const s of rows) {
           add((s && s.id) || (s && s.sessionId))
         }
-      } catch {
-        // 拿不到就退到下一种来源
+      } catch (error) {
+        if (this.log) this.log('listSessions 失败：' + String((error && error.message) || error))
       }
+    } else if (this.log) {
+      this.log('sessionQuery ' + (query ? '没有 listSessions 方法' : '服务不存在'))
     }
 
-    // ② 工作区里记着的会话 —— 没打开的会话主要靠这一条
+    // ② workspaceRegistry.list()[].sessionIds —— 工作区记着的会话
+    //    没打开的会话主要靠这一条：agent 回收了，但工作区还记得它
     const registry = this.#service('workspaceRegistry')
     if (registry && typeof registry.list === 'function') {
       try {
-        for (const ws of registry.list() || []) {
+        const list = registry.list() || []
+        let found = 0
+        for (const ws of list) {
           const ids = ws && ws.sessionIds
           if (!Array.isArray(ids)) continue
-          for (const id of ids) add(id)
+          for (const id of ids) {
+            found++
+            add(id)
+          }
         }
-      } catch {
-        // 拿不到就退到下一种来源
+        if (this.log) this.log(`workspaceRegistry 有 ${list.length} 个工作区，共 ${found} 条会话记录`)
+      } catch (error) {
+        if (this.log) this.log('workspaceRegistry.list 失败：' + String((error && error.message) || error))
+      }
+    } else if (this.log) {
+      this.log('workspaceRegistry ' + (registry ? '没有 list 方法' : '服务不存在'))
+    }
+
+    // ③ sessions.list() —— 会话服务自己的清单
+    const sessions = this.#service('sessions')
+    if (sessions && typeof sessions.list === 'function') {
+      try {
+        const rows = sessions.list() || []
+        if (this.log) this.log(`sessions.list 返回 ${rows.length} 条`)
+        for (const s of rows) {
+          add((s && s.id) || (s && s.sessionId))
+        }
+      } catch (error) {
+        if (this.log) this.log('sessions.list 失败：' + String((error && error.message) || error))
       }
     }
 
-    // ③ 活 agent（兜底）
-    for (const id of this.liveSessionIds()) add(id)
+    // ④ 活 agent（兜底，保证不漏掉正在用的）
+    const live = this.liveSessionIds()
+    if (this.log) this.log(`agents.list 返回 ${live.length} 个活会话`)
+    for (const id of live) add(id)
 
+    if (this.log) this.log(`枚举完成：共 ${byKey.size} 个会话`)
     return [...byKey.values()]
   }
 
@@ -141,59 +189,102 @@ export class SessionFinder {
   }
 
   /**
-   * 会话显示名 —— 存档页的下拉框要用它。
+   * 会话显示名。
    *
    * <p>取名的顺序（能拿到就用）：
    * <ol>
-   *   <li>{@code sessionTitle.get({id})} —— DSH 的标题服务，最准；</li>
-   *   <li>{@code sessions.get(id).title} —— 会话对象自带的标题（兜底，
-   *       有些版本标题就挂在会话上而不在 title 服务里）；</li>
-   *   <li>{@code agents.get(id).session.title} —— 活 agent 上带的；</li>
+   *   <li>{@code sessionQuery.readTitle(id)} —— 从会话日志折叠标题，没打开的也行；</li>
+   *   <li>{@code sessionTitle.get(session)} —— 标题服务要真的 session 对象；</li>
+   *   <li>{@code sessions.get(id).title} —— 会话对象自带的；</li>
+   *   <li>{@code agents.get(id).session.title} —— 活 agent 上带的。</li>
    * </ol>
    *
-   * <p>返回空串表示「确实没有名字」，不返回占位词 ——
-   * 上层要能区分「没名字」和「名字就叫这个」。
-   *
-   * @returns {string} 会话名；拿不到返回 ''
+   * @param {string} sessionId
+   * @param {boolean} [verbose] 排障用：把每个来源的实际结果都记下来
+   * @returns {Promise<string>} 会话名；拿不到返回 ''
    */
-  sessionTitle(sessionId) {
+  async sessionTitle(sessionId, verbose = false) {
     const raw = String(sessionId == null ? '' : sessionId).trim()
     if (!raw) return ''
 
-    // ① 标题服务
-    try {
-      const service = this.#service('sessionTitle')
-      if (service && typeof service.get === 'function') {
-        const snapshot = service.get({ id: raw })
-        const title = snapshot && snapshot.title
-        if (title && String(title).trim()) return String(title).trim()
+    const trace = (where, value) => {
+      if (verbose && this.log) {
+        this.log(`取名 ${shortId(raw)} @ ${where} → ${describe(value)}`)
       }
-    } catch {
-      // 退到下一种来源
     }
 
-    // ② 会话对象自带的标题
+    // ① sessionQuery.readTitle(id) —— 最靠得住，不要求会话活着
+    const query = this.#service('sessionQuery')
+    if (query && typeof query.readTitle === 'function') {
+      for (const id of idVariants(raw)) {
+        try {
+          const snapshot = await query.readTitle(id)
+          trace(`sessionQuery.readTitle(${id})`, snapshot)
+          const title = pickTitle(snapshot)
+          if (title) return title
+        } catch (error) {
+          trace(`sessionQuery.readTitle(${id}) 抛错`, error)
+        }
+      }
+    } else {
+      trace('sessionQuery', query ? '没有 readTitle 方法' : '服务不存在')
+    }
+
+    // ② sessionTitle.get(session) —— 要真的 session 对象，不是 {id}
+    const titles = this.#service('sessionTitle')
+    const live = this.#liveSession(raw)
+    if (titles && typeof titles.get === 'function' && live) {
+      try {
+        const snapshot = titles.get(live)
+        trace('sessionTitle.get(session)', snapshot)
+        const title = pickTitle(snapshot)
+        if (title) return title
+      } catch (error) {
+        trace('sessionTitle.get(session) 抛错', error)
+      }
+    } else if (!live) {
+      trace('sessionTitle', '会话没活着，取不到 session 对象')
+    }
+
+    // ③ sessions.get(id).title
     try {
       const sessions = this.#service('sessions')
       if (sessions && typeof sessions.get === 'function') {
         for (const id of idVariants(raw)) {
           const s = sessions.get(id)
-          if (s) {
-            const title = s.title || s.name
-            if (title && String(title).trim()) return String(title).trim()
-          }
+          trace(`sessions.get(${id})`, s)
+          const title = pickTitle(s)
+          if (title) return title
         }
       }
-    } catch {
-      // 退到下一种来源
+    } catch (error) {
+      trace('sessions.get 抛错', error)
     }
 
-    // ③ 活 agent 上带的
+    // ④ 活 agent 上带的
     const agent = this.findAgent(raw)
-    const fromAgent = agent && agent.session && agent.session.title
-    if (fromAgent && String(fromAgent).trim()) return String(fromAgent).trim()
+    trace('agents.get', agent ? agent.session : null)
+    const fromAgent = pickTitle(agent && agent.session)
+    if (fromAgent) return fromAgent
 
     return ''
+  }
+
+  /** 内存里的活 session 对象；没有返回 undefined。 */
+  #liveSession(sessionId) {
+    const sessions = this.#service('sessions')
+    if (sessions && typeof sessions.get === 'function') {
+      for (const id of idVariants(sessionId)) {
+        try {
+          const s = sessions.get(id)
+          if (s) return s
+        } catch {
+          // 换下一种写法
+        }
+      }
+    }
+    const agent = this.findAgent(sessionId)
+    return agent && agent.session
   }
 
   /** 只查内存里的 agent，两种 id 写法都试。**不触发恢复。** */
@@ -239,4 +330,52 @@ export class SessionFinder {
     }
     return undefined
   }
+}
+
+/**
+ * 从各种可能的形状里挑出标题文本。
+ * <p>可能是 {@code {title}}、{@code {title: {title}}}、裸字符串。
+ */
+function pickTitle(value) {
+  if (value == null) return ''
+  if (typeof value === 'string') {
+    return value.trim()
+  }
+  if (typeof value !== 'object') return ''
+
+  // 直接挂在对象上
+  for (const key of ['title', 'name']) {
+    const v = value[key]
+    if (typeof v === 'string' && v.trim()) return v.trim()
+  }
+  // title 又包了一层（readTitleSnapshot 给的是 { title: { title: '...' } }）
+  const nested = value.title
+  if (nested && typeof nested === 'object') {
+    for (const key of ['title', 'name']) {
+      const v = nested[key]
+      if (typeof v === 'string' && v.trim()) return v.trim()
+    }
+  }
+  return ''
+}
+
+/** 把一个值描述成一行短文本，排障日志用。 */
+function describe(value) {
+  if (value === undefined) return 'undefined'
+  if (value === null) return 'null'
+  if (typeof value === 'string') {
+    return JSON.stringify(value.length > 60 ? value.slice(0, 60) + '…' : value)
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (value instanceof Error) return `Error(${value.message})`
+  if (typeof value === 'object') {
+    try {
+      const keys = Object.keys(value)
+      const head = keys.slice(0, 8).join(',')
+      return `{${head}${keys.length > 8 ? ',…' : ''}}`
+    } catch {
+      return '[object]'
+    }
+  }
+  return String(value)
 }

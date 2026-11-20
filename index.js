@@ -34,9 +34,20 @@ export const name = 'dsh-wdd-cat-linker'
 
 /**
  * 依赖注入清单。少一个都会让插件不激活，所以只列真正用到的。
- * sessionController 不在这里：它通过 ctx.get() 惰性取，缺失只降级成「不恢复会话」。
+ *
+ * <p>枚举会话和取名字全靠这三个：
+ * <ul>
+ *   <li>{@code sessions} —— 会话服务；</li>
+ *   <li>{@code sessionTitle} —— 标题服务，活会话的取名来源；</li>
+ *   <li>{@code workspaceRegistry} —— <b>工作区记着的 sessionIds</b>，
+ *       没打开的会话主要靠它。</li>
+ * </ul>
+ * 不声明就取不到，表现就是「只看到活会话」。
+ *
+ * <p>sessionController / sessionQuery 不在这里：它们通过 ctx.get() 惰性取，
+ * 缺失只降级成「不恢复会话 / 读不到磁盘标题」。
  */
-export const inject = ['agents', 'timer', 'tools']
+export const inject = ['agents', 'sessions', 'sessionTitle', 'timer', 'tools', 'workspaceRegistry']
 
 export const Config = Schema.object({
   enabled: Schema.boolean().default(true).description('总开关。关着 = 完全不收发'),
@@ -73,7 +84,7 @@ export function apply(ctx, config) {
     baseUrl: settings.catBaseUrl,
     timeoutMs: settings.requestTimeoutMs,
   })
-  const finder = new SessionFinder(ctx)
+  const finder = new SessionFinder(ctx, log)
   const cache = new MessageCache()
 
   // ── 本地配置 ──────────────────────────────────────────────

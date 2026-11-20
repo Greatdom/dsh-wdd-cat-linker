@@ -17,6 +17,8 @@ import { Inbound } from './src/linker/inbound.js'
 import { Outbound } from './src/linker/outbound.js'
 import { Bridge } from './src/linker/bridge.js'
 import { createSubmitRepliesTool } from './src/linker/submit_tool.js'
+import { takeOverSession } from './src/linker/stateless_context.js'
+import { blockScheduleTools } from './src/linker/schedule_guard.js'
 import { MessageCache } from './src/common/message_cache.js'
 import { SessionFinder } from './src/common/session_finder.js'
 import {
@@ -43,6 +45,8 @@ export const Config = Schema.object({
     .description('轮询待投递队列的间隔（毫秒）'),
   requestTimeoutMs: Schema.number().default(REQUEST_TIMEOUT_MS)
     .description('单次请求超时（毫秒）'),
+  systemPrompt: Schema.string().default('')
+    .description('无状态模式下的固定人设；留空则只抹历史、不改系统提示词'),
 })
 
 export function apply(ctx, config) {
@@ -77,6 +81,58 @@ export function apply(ctx, config) {
     }))
   } else {
     log('宿主没提供 tools 服务 —— 模型无法交卷，出站不可用')
+  }
+
+  // ── 日程工具拦截 ──────────────────────────────────────────
+  // 日程归 Java 的 ScheduleService 管，内置工具直连会另建一套数据。
+  // 只拦 cat 服务器推来的那一轮，界面直接聊天不受影响。
+  blockScheduleTools(ctx, cache, log)
+
+  // ── 无状态上下文：严格照 dsh-wdd-context 的写法 ──────────────
+  // 它实测能跑通，所以这里不用 ctx.effect 包、不用白名单，
+  // 只把「哪些轮次算外部消息」的判断放进 pre-step。
+  ctx.on('agent/created', ({ agent }) => {
+    if (!settings.enabled) return
+    if (!agent) {
+      log('agent/created 没带 agent')
+      return
+    }
+    if (!agent.ctx) {
+      log('agent.ctx 不存在，无法接管')
+      return
+    }
+    try {
+      takeOverSession(agent.ctx, {
+        systemPrompt: settings.systemPrompt,
+        log,
+      })
+      log(`接管会话 …${String(agent.session?.id || '').slice(-8)} 的无状态上下文`)
+    } catch (error) {
+      log('接管无状态上下文失败：' + String((error && error.message) || error))
+    }
+  })
+
+  // 已在运行的 agent 不会再触发 agent/created —— 补接管一次
+  try {
+    const agents = ctx.get?.('agents') ?? ctx.agents
+    if (agents && typeof agents.list === 'function') {
+      let resumed = 0
+      for (const agent of agents.list() || []) {
+        if (!agent || !agent.ctx) continue
+        try {
+          takeOverSession(agent.ctx, {
+            systemPrompt: settings.systemPrompt,
+            log,
+          })
+          resumed++
+        } catch (error) {
+          log('补接管失败：' + String((error && error.message) || error))
+        }
+      }
+      if (resumed > 0) log(`补接管 ${resumed} 个已在运行的会话`)
+    }
+  } catch (error) {
+    log('枚举已有 agent 失败：' + String((error && error.message) || error))
   }
 
   // ── 出站：监听一轮结束 ────────────────────────────────────

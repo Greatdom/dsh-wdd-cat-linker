@@ -1,6 +1,7 @@
 /** 专门管消息出站业务 */
 
 import { API } from '../common/api.js'
+import { plainText } from '../common/media.js'
 
 /** 宿主定的封闭事件名，写错不会报错只会静默不触发。 */
 const SESSION_EVENT = {
@@ -112,6 +113,7 @@ export class Outbound {
           senderKind: String(origin.senderKind || ''),
           channelMessageId: String(origin.channelMessageId || ''),
           timestamp: Number(origin.timestamp) || 0,
+          text: plainText(origin.content),
         },
         messages: messages.map((m) => ({
           chatType: m.chatType,

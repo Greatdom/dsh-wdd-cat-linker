@@ -1,8 +1,9 @@
 /** 专门管消息入站业务 */
 
 import { API } from '../common/api.js'
-import { INBOUND_PAGE_SIZE } from '../common/constant.js'
+import { INBOUND_MARK, INBOUND_SUFFIX } from '../common/constant.js'
 import { shortId } from '../common/session_finder.js'
+import { plainText, summarize } from '../common/media.js'
 
 /**
  * 入站：Java → DSH。
@@ -117,11 +118,10 @@ export class Inbound {
     }
 
     // 正文里带上来源，模型才知道这轮该用 submit_replies 回出去，
-    // 而不是当成界面上的闲聊。
-    const prompt = `【来自外部聊天】${message.chatType === 'group' ? '群聊' : '私聊'}`
+    // 而不是当成界面上的闲聊。前缀也是无状态上下文识别外部消息的依据。
+    const prompt = `${INBOUND_MARK}${message.chatType === 'group' ? '群聊' : '私聊'}`
       + ` ${message.chatId}，发送者 ${message.senderName || message.senderId || '未知'}：\n`
-      + `${text}\n\n`
-      + '（回复必须调用 submit_replies 工具，否则对方收不到。）'
+      + `${text}\n\n${INBOUND_SUFFIX}`
 
     await agent.followup({
       // id 带上存档后缀：同一条消息投给多个存档时不会撞
@@ -143,19 +143,4 @@ export class Inbound {
   dispose() {
     this.stopped = true
   }
-}
-
-/** Content → 纯文本。第一版只处理 text 段。 */
-function plainText(content) {
-  if (!content) return ''
-  if (typeof content.value === 'string') return content.value
-  if (Array.isArray(content.parts)) {
-    return content.parts.map(plainText).filter(Boolean).join(' ')
-  }
-  return ''
-}
-
-function summarize(text) {
-  const flat = String(text || '').replace(/\s+/g, ' ').trim()
-  return flat.length > 40 ? flat.slice(0, 40) + '…' : flat
 }

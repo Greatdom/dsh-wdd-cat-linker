@@ -2,24 +2,23 @@
 
 import { API } from '../common/api.js'
 
+const LOG_UPLOAD_LIMIT = 50
+
 /**
- * 心跳：告诉 Java「我现在能为哪些会话服务」。
- *
- * 这是整条链的总闸 —— Java 侧 DedupProcessor 第 ⓪ 道校验对空清单是全拒。
- * 心跳不发，DSH 里永远收不到消息。
- *
- * 报上去的是 sessionId → 会话名，语义为整体覆盖。
+ * 心跳：
  */
 export class Heartbeat {
   /**
    * @param {object} deps
    * @param {import('../linker/bridge.js').Bridge} deps.bridge
    * @param {import('../common/session_finder.js').SessionFinder} deps.finder
+   * @param {import('../common/logger.js').LinkerLogger} [deps.logger] 日志缓冲
    * @param {(text: string, meta?: object) => void} deps.log
    */
-  constructor({ bridge, finder, log }) {
+  constructor({ bridge, finder, logger, log }) {
     this.bridge = bridge
     this.finder = finder
+    this.logger = logger || null
     this.log = log
     /** 正在跑的一轮（single-flight）。 */
     this.running = null
@@ -48,9 +47,18 @@ export class Heartbeat {
   async #run() {
     this.sessions = await this.finder.getAllSessions()
 
+    // 先取日志快照再发心跳
+    const logs = this.logger ? this.logger.recent(LOG_UPLOAD_LIMIT) : []
+
+    const body = {
+      sessions: Object.fromEntries(this.sessions),
+    }
+    if (logs.length) {
+      body.logs = logs
+    }
+
     try {
-      // Map 直接进 JSON.stringify 会变成 {}，必须先转普通对象
-      await this.bridge.post(API.heartbeat, { sessions: Object.fromEntries(this.sessions) })
+      await this.bridge.post(API.heartbeat, body)
     } catch (error) {
       if (!this.failed) {
         this.log('心跳上报失败（中转站没起来？）：' + String((error && error.message) || error))

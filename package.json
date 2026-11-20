@@ -6,12 +6,16 @@
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locate/*.json",
+    "./icon": "./src/asset/icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
     "src",
     "client.js",
+    "locate",
     "cordis.patch.yml"
   ],
   "engines": {
@@ -20,6 +24,9 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   },
   "keywords": [

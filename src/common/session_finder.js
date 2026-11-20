@@ -21,10 +21,7 @@ export function idVariants(raw) {
 }
 
 /**
- * 会话查找：从 DSH 宿主拿到 agent。
- *
- * 为什么必须在 JS 侧：只有 DSH 知道哪间会话有活 agent、哪些已归档。
- * Java 只接收结论（sessionId 清单），不知道这些。
+ * 会话查找：从 DSH 宿主拿到 agent 和会话清单。
  */
 export class SessionFinder {
   /** @param {object} ctx cordis 上下文 */
@@ -34,9 +31,6 @@ export class SessionFinder {
     this.services = new Map()
     /**
      * 全局的 sessionId → 会话名缓存。
-     *
-     * 拿到一次名字就不再 resume —— 没活 agent 的会话每次 resume 都是真读盘。
-     * 按约定永久缓存，会话改名后这里不跟进，要等插件重启。
      */
     this.titleCache = new Map()
   }
@@ -58,59 +52,49 @@ export class SessionFinder {
   /**
    * 全部会话，含没加载到内存的。
    *
-   * 与「有活 agent 的会话」不同：DSH 的 agent 按需创建、用完回收，
-   * agents.list() 只返回内存里挂着的那些。心跳要报的是「存在」而不是「现在活着」。
-   *
-   * 名字走 titleCache，拿到一次就不再 resume。
-   * 拿不到名字的会话不缓存 —— 否则一次临时打不开会被永久当成「没名字」。
-   *
    * @returns {Promise<Map<string, string>>} sessionId → 会话名（拿不到名字时给空串）
    */
   async getAllSessions() {
     const out = new Map()
 
-    for (const sessionId of this.#candidateSessionIds()) {
-      const cached = this.titleCache.get(sessionId)
-      if (cached !== undefined) {
-        out.set(sessionId, cached)
+    for (const id of this.allSessionIds()) {
+      const cached = this.titleCache.get(id)
+      if (cached) {
+        out.set(id, cached)
         continue
       }
-      const agent = await this.resumeAgent(sessionId)
-      const title = agent ? this.#sessionTitle(agent) : ''
-      if (title) this.titleCache.set(sessionId, title)
-      // 恢复不出来的会话也照样报上去
-      out.set(sessionId, title)
+      const title = this.sessionTitle(id)
+      if (title) this.titleCache.set(id, title)
+      // 拿不到名字也照样报上去 —— 会话本身是存在的
+      out.set(id, title)
     }
     return out
   }
-  /** 从 agent 上取会话名；取不到返回空串。 */
-  #sessionTitle(agent) {
-    const title = agent && agent.session && agent.session.title
-    return title && String(title).trim() ? String(title).trim() : ''
-  }
 
-  /** 会话 id 候选：活 agent + 会话服务 + 工作区记着的。 */
-  #candidateSessionIds() {
-    const ids = new Set()
+  /**
+   * **全部**会话 id（不只是有活 agent 的）。
+   *
+   * <p>数据来源（按可靠性排序，能拿到就合并）：
+   * <ol>
+   *   <li>{@code sessions.list()} —— 直接的会话清单；</li>
+   *   <li>{@code workspaceRegistry.list()[].sessionIds} —— 工作区记着的会话；</li>
+   *   <li>{@code agents.list()} —— 活 agent（兜底，保证不漏掉正在用的）。</li>
+   * </ol>
+   *
+   * @returns {string[]}
+   */
+  allSessionIds() {
+    const byKey = new Map()
 
-    const add = (raw) => {
-      const id = String(raw == null ? '' : raw).trim()
-      if (id) ids.add(id)
+    const add = (rawId) => {
+      const id = String(rawId == null ? '' : rawId).trim()
+      if (!id) return
+      const key = sessionKey(id)
+      if (!key || byKey.has(key)) return
+      byKey.set(key, id)
     }
 
-    // ① 有活 agent 的
-    const agents = this.#service('agents')
-    if (agents && typeof agents.list === 'function') {
-      try {
-        for (const agent of agents.list() || []) {
-          add((agent && agent.session && agent.session.id) || (agent && agent.sessionId))
-        }
-      } catch {
-        // 退到下一种来源
-      }
-    }
-
-    // ② 会话服务的全部清单
+    // ① 直接的会话清单
     const sessions = this.#service('sessions')
     if (sessions && typeof sessions.list === 'function') {
       try {
@@ -118,16 +102,101 @@ export class SessionFinder {
           add((s && s.id) || (s && s.sessionId))
         }
       } catch {
-        // 退到下一种来源
+        // 拿不到就退到下一种来源
       }
     }
 
-    return [...ids]
+    // ② 工作区里记着的会话 —— 没打开的会话主要靠这一条
+    const registry = this.#service('workspaceRegistry')
+    if (registry && typeof registry.list === 'function') {
+      try {
+        for (const ws of registry.list() || []) {
+          const ids = ws && ws.sessionIds
+          if (!Array.isArray(ids)) continue
+          for (const id of ids) add(id)
+        }
+      } catch {
+        // 拿不到就退到下一种来源
+      }
+    }
+
+    // ③ 活 agent（兜底）
+    for (const id of this.liveSessionIds()) add(id)
+
+    return [...byKey.values()]
   }
 
-  
+  /** 当前有活 agent 的会话 id。 */
+  liveSessionIds() {
+    const agents = this.#service('agents')
+    if (!agents || typeof agents.list !== 'function') return []
+    try {
+      return (agents.list() || [])
+        .map((agent) => (agent && agent.session && agent.session.id) || (agent && agent.sessionId))
+        .filter(Boolean)
+        .map(String)
+    } catch {
+      return []
+    }
+  }
 
-  /** 只查内存里的 agent，两种 id 写法都试。不触发恢复。 */
+  /**
+   * 会话显示名 —— 存档页的下拉框要用它。
+   *
+   * <p>取名的顺序（能拿到就用）：
+   * <ol>
+   *   <li>{@code sessionTitle.get({id})} —— DSH 的标题服务，最准；</li>
+   *   <li>{@code sessions.get(id).title} —— 会话对象自带的标题（兜底，
+   *       有些版本标题就挂在会话上而不在 title 服务里）；</li>
+   *   <li>{@code agents.get(id).session.title} —— 活 agent 上带的；</li>
+   * </ol>
+   *
+   * <p>返回空串表示「确实没有名字」，不返回占位词 ——
+   * 上层要能区分「没名字」和「名字就叫这个」。
+   *
+   * @returns {string} 会话名；拿不到返回 ''
+   */
+  sessionTitle(sessionId) {
+    const raw = String(sessionId == null ? '' : sessionId).trim()
+    if (!raw) return ''
+
+    // ① 标题服务
+    try {
+      const service = this.#service('sessionTitle')
+      if (service && typeof service.get === 'function') {
+        const snapshot = service.get({ id: raw })
+        const title = snapshot && snapshot.title
+        if (title && String(title).trim()) return String(title).trim()
+      }
+    } catch {
+      // 退到下一种来源
+    }
+
+    // ② 会话对象自带的标题
+    try {
+      const sessions = this.#service('sessions')
+      if (sessions && typeof sessions.get === 'function') {
+        for (const id of idVariants(raw)) {
+          const s = sessions.get(id)
+          if (s) {
+            const title = s.title || s.name
+            if (title && String(title).trim()) return String(title).trim()
+          }
+        }
+      }
+    } catch {
+      // 退到下一种来源
+    }
+
+    // ③ 活 agent 上带的
+    const agent = this.findAgent(raw)
+    const fromAgent = agent && agent.session && agent.session.title
+    if (fromAgent && String(fromAgent).trim()) return String(fromAgent).trim()
+
+    return ''
+  }
+
+  /** 只查内存里的 agent，两种 id 写法都试。**不触发恢复。** */
   findAgent(sessionId) {
     const raw = String(sessionId == null ? '' : sessionId).trim()
     if (!raw) return undefined

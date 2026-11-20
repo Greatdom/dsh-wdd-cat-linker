@@ -22,6 +22,7 @@ import { blockScheduleTools } from './src/linker/schedule_guard.js'
 import { MessageCache } from './src/common/message_cache.js'
 import { SessionFinder } from './src/common/session_finder.js'
 import { LocalStore, configFilePath, registerRoutes } from './src/common/setting_store.js'
+import { LinkerLogger } from './src/common/logger.js'
 import {
   HEARTBEAT_INTERVAL_MS,
   INBOUND_INTERVAL_MS,
@@ -53,14 +54,20 @@ export const Config = Schema.object({
 export function apply(ctx, config) {
   const settings = { ...Config(), ...(config || {}) }
 
-  // ── 基础设施 ──────────────────────────────────────────────
-  const log = (text, meta) => {
-    try {
-      ctx.logger?.info?.(`[cat-linker] ${text}`, meta)
-    } catch {
-      // 宿主日志不可用时不影响链路
-    }
-  }
+  // 日志：既打到宿主控制台，也留一份给心跳上报 ——
+  const logger = new LinkerLogger({
+    sink: (text, entry) => {
+      try {
+        const line = `[cat-linker] ${text}`
+        if (entry.level === 'ERROR') ctx.logger?.error?.(line)
+        else if (entry.level === 'WARN') ctx.logger?.warn?.(line)
+        else ctx.logger?.info?.(line)
+      } catch {
+        // 宿主日志不可用时不影响链路
+      }
+    },
+  })
+  const log = (text, meta) => logger.log(text, meta)
 
   const bridge = new Bridge({
     baseUrl: settings.catBaseUrl,
@@ -70,8 +77,6 @@ export function apply(ctx, config) {
   const cache = new MessageCache()
 
   // ── 本地配置 ──────────────────────────────────────────────
-  // 配置存在跳板本地（profile 的 data/linker.json），不存 Java：
-  // 地址是「Java 在哪」，存在 Java 里就是循环依赖。
   const store = new LocalStore({
     file: configFilePath(ctx),
     settings,
@@ -80,10 +85,6 @@ export function apply(ctx, config) {
   store.hydrate()
 
   // 设置页读写路由。
-  //
-  // ⚠ 宿主的 webServer 不是 Express，没有 use()。用 ctx.inject 拿服务、
-  //   webServer.register({kind,path,handler}) 注册。整段包 try/catch：
-  //   路由挂不上只是设置页用不了，绝不能连累整条消息链路。
   try {
     ctx.inject(['webServer'], (webCtx) => {
       try {
@@ -100,7 +101,7 @@ export function apply(ctx, config) {
   }
 
   // ── 三个业务件 ────────────────────────────────────────────
-  const heartbeat = new Heartbeat({ bridge, finder, log })
+  const heartbeat = new Heartbeat({ bridge, finder, logger, log })
   const inbound = new Inbound({ bridge, finder, cache, log })
   const outbound = new Outbound({ bridge, cache, log })
 

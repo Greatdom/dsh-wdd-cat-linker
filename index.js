@@ -21,6 +21,7 @@ import { takeOverSession } from './src/linker/stateless_context.js'
 import { blockScheduleTools } from './src/linker/schedule_guard.js'
 import { MessageCache } from './src/common/message_cache.js'
 import { SessionFinder } from './src/common/session_finder.js'
+import { LocalStore, configFilePath, registerRoutes } from './src/common/setting_store.js'
 import {
   HEARTBEAT_INTERVAL_MS,
   INBOUND_INTERVAL_MS,
@@ -67,6 +68,36 @@ export function apply(ctx, config) {
   })
   const finder = new SessionFinder(ctx)
   const cache = new MessageCache()
+
+  // ── 本地配置 ──────────────────────────────────────────────
+  // 配置存在跳板本地（profile 的 data/linker.json），不存 Java：
+  // 地址是「Java 在哪」，存在 Java 里就是循环依赖。
+  const store = new LocalStore({
+    file: configFilePath(ctx),
+    settings,
+    log,
+  })
+  store.hydrate()
+
+  // 设置页读写路由。
+  //
+  // ⚠ 宿主的 webServer 不是 Express，没有 use()。用 ctx.inject 拿服务、
+  //   webServer.register({kind,path,handler}) 注册。整段包 try/catch：
+  //   路由挂不上只是设置页用不了，绝不能连累整条消息链路。
+  try {
+    ctx.inject(['webServer'], (webCtx) => {
+      try {
+        const dispose = registerRoutes(webCtx, store)
+        if (typeof dispose !== 'function') {
+          log('设置页路由没挂上（webServer.register 不可用）')
+        }
+      } catch (error) {
+        log('设置页路由注册失败：' + String((error && error.message) || error))
+      }
+    })
+  } catch (error) {
+    log('拿不到 webServer 服务（设置页不可用）：' + String((error && error.message) || error))
+  }
 
   // ── 三个业务件 ────────────────────────────────────────────
   const heartbeat = new Heartbeat({ bridge, finder, log })

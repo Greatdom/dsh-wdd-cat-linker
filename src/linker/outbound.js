@@ -84,16 +84,35 @@ export class Outbound {
     }))
 
     // 先落出站池：推失败也不丢
-    this.cache.putOutbound(sessionId, archiveId, messages)
-    await this.push(sessionId, archiveId, messages)
+    this.cache.putOutbound(sessionId, archiveId, messages, origin)
+    await this.push(sessionId, archiveId, messages, origin)
   }
 
-  /** 把出站池里这个会话的回复推给 Java；按 ack 清缓存。 */
-  async push(sessionId, archiveId, messages) {
+  /**
+   * 把出站池里这个会话的回复推给 Java；按 ack 清缓存。
+   *
+   * @param {object} origin 这一轮在回的那条入站消息 —— Java 靠它决定渠道和目标。
+   *   只带身份字段：assessment / recallBundle / egoDecision 是 Java 算的，
+   *   带回去既没用还会撞上复杂类型反序列化。
+   */
+  async push(sessionId, archiveId, messages, origin) {
     try {
       const body = await this.bridge.post(API.push, {
         archiveId,
         sessionId,
+        inbound: {
+          archiveId: String(origin.archiveId || ''),
+          sessionId: String(origin.sessionId || ''),
+          channel: String(origin.channel || ''),
+          chatType: String(origin.chatType || ''),
+          chatId: String(origin.chatId || ''),
+          senderId: String(origin.senderId || ''),
+          senderName: String(origin.senderName || ''),
+          card: String(origin.card || ''),
+          senderKind: String(origin.senderKind || ''),
+          channelMessageId: String(origin.channelMessageId || ''),
+          timestamp: Number(origin.timestamp) || 0,
+        },
         messages: messages.map((m) => ({
           chatType: m.chatType,
           chatId: m.chatId,

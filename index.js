@@ -80,8 +80,6 @@ export function apply(ctx, config) {
   }
 
   // ── 出站：监听一轮结束 ────────────────────────────────────
-  // 必须用 ctx.effect 包着：裸 ctx.on 拿不到插件的生命周期，
-  // 回调可能永远不触发，而且卸载时不会解绑。
   ctx.effect(() => {
     const dispose = ctx.on('session/event', (session, event) => {
       if (!settings.enabled) return

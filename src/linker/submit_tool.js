@@ -23,7 +23,7 @@ export function createSubmitRepliesTool({ onSubmit, log }) {
   return defineTool({
     name: SUBMIT_REPLIES,
     description:
-      '把回复发到外部聊天（QQ）的唯一通道。'
+      '把回复发到外部聊天的唯一通道。'
       + '只有本轮由外部聊天消息触发时（提示里会写明来自谁、发在哪）才用它，'
       + '此时回复必须全部走这里，不能只用普通文本，否则对方收不到。'
       + '如果本轮是用户在界面上直接对话、没有外部来源，就不要调用，正常用文本回答。',

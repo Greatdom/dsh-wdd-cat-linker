@@ -88,9 +88,10 @@ export class MessageCache {
    * 一条一条存而不是整批存 —— ack 是按 index 逐条确认的，
    * 整批存就没法只清掉被确认的那部分。
    */
-  putOutbound(sessionId, archiveId, messages) {
+  putOutbound(sessionId, archiveId, messages, origin) {
     for (const m of Array.isArray(messages) ? messages : []) {
-      this.outbound.push({ sessionId, archiveId, index: m.index, ...m })
+      // origin 一起存：推失败要重推时还得靠它决定发去哪
+      this.outbound.push({ sessionId, archiveId, origin, index: m.index, ...m })
     }
   }
 

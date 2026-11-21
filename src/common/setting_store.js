@@ -132,7 +132,7 @@ export class LocalStore {
     if (!spec) {
       return undefined
     }
-    const value = normalize(key, this.settings[key])
+    const value = normalize(key, this.settings[key], 'read')
     return value === undefined ? spec.default : value
   }
 
@@ -196,8 +196,29 @@ const SPEC = {
   outboundFailTtlMs: { type: 'number', min: 5000, max: 600000, default: 60000 },
 }
 
-/** 按类型规整 */
-function normalize(key, raw) {
+/**
+ * 各设置项的默认值。
+ *
+ * 给 index.js 的 Config Schema 用：`Schema.number().default(DEFAULTS.xxx)`。
+ * 这样「默认值」只在 SPEC 里写一次 —— 以前 constant.js 和 Schema 各写一份，
+ * 改了一边忘了另一边，两处就悄悄分叉了。
+ */
+export const DEFAULTS = Object.freeze(
+  Object.fromEntries(Object.entries(SPEC).map(([key, spec]) => [key, spec.default])),
+)
+
+/**
+ * 按类型规整一个值。
+ *
+ * @param {string} key 设置项名
+ * @param {*} raw 原始值
+ * @param {'save'|'read'} mode
+ *   · save —— 用户提交的值。字符串缺失给 ''（清空是有意义的操作）；
+ *   · read —— 运行时读值。缺失一律给 undefined，让调用方回退到 default。
+ *     否则 catBaseUrl 这类字符串项会拿到 ''，而不是 SPEC 里的默认地址。
+ * @returns {*} 规整后的值；不合法返回 undefined
+ */
+function normalize(key, raw, mode = 'save') {
   const spec = SPEC[key]
   if (!spec) {
     return undefined
@@ -209,7 +230,14 @@ function normalize(key, raw) {
     return undefined
   }
   if (spec.type === 'string') {
-    return raw == null ? '' : String(raw).trim()
+    if (raw == null) {
+      return mode === 'read' ? undefined : ''
+    }
+    const s = String(raw).trim()
+    if (s === '' && mode === 'read') {
+      return undefined
+    }
+    return s
   }
   const n = Number(raw)
   if (!Number.isFinite(n)) {

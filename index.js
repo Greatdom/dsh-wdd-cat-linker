@@ -18,32 +18,36 @@ import { takeOverSession } from './src/utils/stateless_context.js'
 import { blockScheduleTools } from './src/utils/schedule_guard.js'
 import { MessageCache } from './src/common/message_cache.js'
 import { SessionFinder } from './src/common/session_finder.js'
-import { LocalStore, configFilePath, registerRoutes } from './src/common/setting_store.js'
+import { LocalStore, DEFAULTS, configFilePath, registerRoutes } from './src/common/setting_store.js'
 import { LinkerLogger } from './src/common/logger.js'
-import {
-  HEARTBEAT_INTERVAL_MS,
-  INBOUND_INTERVAL_MS,
-  LOG_UPLOAD_LIMIT,
-  OUTBOUND_FAIL_TTL_MS,
-  OUTBOUND_SWEEP_INTERVAL_MS,
-  REQUEST_TIMEOUT_MS,
-} from './src/common/constant.js'/** 插件名（cordis 用它做去重/卸载标识）。 */
+import { OUTBOUND_SWEEP_INTERVAL_MS } from './src/common/constant.js'
+
+/** 插件名（cordis 用它做去重/卸载标识）。 */
 export const name = 'dsh-wdd-cat-linker'
 
 export const inject = ['agents', 'sessions', 'sessionTitle', 'timer', 'tools', 'workspaceRegistry']
 
+/**
+ * 插件配置。
+ *
+ * 每项的默认值都取自 setting_store 的 DEFAULTS（也就是 SPEC），不在这里另写一份 ——
+ * 设置页渲染、保存夹取、运行时读取、启动默认，四个地方用同一份定义。
+ *
+ * 注意：这里的 default 只在**插件启动时**生效。用户之后在设置页改的值
+ * 会写进 LocalStore，运行时必须用 store.get(key) 读，才能拿到最新值。
+ */
 export const Config = Schema.object({
-  enabled: Schema.boolean().default(true).description('总开关。关着 = 完全不收发'),
-  catBaseUrl: Schema.string().default('http://127.0.0.1:8080').description('本地 Java 中转站地址'),
-  heartbeatIntervalMs: Schema.number().default(HEARTBEAT_INTERVAL_MS)
-    .description('心跳间隔（毫秒），与 legacy 一致'),
-  inboundIntervalMs: Schema.number().default(INBOUND_INTERVAL_MS)
+  enabled: Schema.boolean().default(DEFAULTS.enabled).description('总开关。关着 = 完全不收发'),
+  catBaseUrl: Schema.string().default(DEFAULTS.catBaseUrl).description('本地 Java 中转站地址'),
+  heartbeatIntervalMs: Schema.number().default(DEFAULTS.heartbeatIntervalMs)
+    .description('心跳间隔（毫秒）'),
+  inboundIntervalMs: Schema.number().default(DEFAULTS.inboundIntervalMs)
     .description('轮询待投递队列的间隔（毫秒）'),
-  requestTimeoutMs: Schema.number().default(REQUEST_TIMEOUT_MS)
+  requestTimeoutMs: Schema.number().default(DEFAULTS.requestTimeoutMs)
     .description('单次请求超时（毫秒）'),
-  logUploadLimit: Schema.number().default(LOG_UPLOAD_LIMIT)
+  logUploadLimit: Schema.number().default(DEFAULTS.logUploadLimit)
     .description('每次心跳上报几条日志给中转站（10~200）'),
-  outboundFailTtlMs: Schema.number().default(OUTBOUND_FAIL_TTL_MS)
+  outboundFailTtlMs: Schema.number().default(DEFAULTS.outboundFailTtlMs)
     .description('推送失败的出站消息保留多久再丢弃（毫秒，5000~600000）'),
   systemPrompt: Schema.string().default('')
     .description('无状态模式下的固定人设；留空则只抹历史、不改系统提示词'),

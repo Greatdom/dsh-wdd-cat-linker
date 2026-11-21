@@ -2,7 +2,7 @@
  * 服务器连接桥,用来处理http请求
  */
 
-import { REQUEST_TIMEOUT_MS } from '../common/constant.js'
+import { DEFAULTS } from '../common/setting_store.js'
 
 export class BridgeError extends Error {
   constructor(message) {
@@ -17,9 +17,9 @@ export class Bridge {
    * @param {string} options.baseUrl   中转站地址，例如 http://127.0.0.1:8080
    * @param {number} [options.timeoutMs] 单次请求超时
    */
-  constructor({ baseUrl, timeoutMs = REQUEST_TIMEOUT_MS }) {
+  constructor({ baseUrl, timeoutMs = DEFAULTS.requestTimeoutMs }) {
     this.base = String(baseUrl || '').trim().replace(/\/+$/, '')
-    this.timeoutMs = Math.max(500, Number(timeoutMs) || REQUEST_TIMEOUT_MS)
+    this.timeoutMs = Math.max(500, Number(timeoutMs) || DEFAULTS.requestTimeoutMs)
   }
 
   get(path) {

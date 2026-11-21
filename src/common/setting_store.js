@@ -39,6 +39,7 @@ export const EDITABLE_KEYS = Object.freeze([
   'inboundIntervalMs',
   'requestTimeoutMs',
   'logUploadLimit',
+  'outboundFailTtlMs',
 ])
 
 /**
@@ -172,6 +173,7 @@ const SPEC = {
   inboundIntervalMs: { type: 'number', min: 300, max: 30000 },
   requestTimeoutMs: { type: 'number', min: 1000, max: 60000 },
   logUploadLimit: { type: 'number', min: 10, max: 200 },
+  outboundFailTtlMs: { type: 'number', min: 5000, max: 600000 },
 }
 
 /** 按类型规整 */

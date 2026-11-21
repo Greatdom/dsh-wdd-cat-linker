@@ -88,6 +88,8 @@ window.__ModuleLoader__.load({
       { key: 'requestTimeoutMs', label: '请求超时（毫秒）', hint: '1000~60000', type: 'number', min: 1000, max: 60000 },
 
       { group: '日志', key: 'logUploadLimit', label: '每次上报日志条数', hint: '跟着心跳发给中转站，10~200；改完下一跳生效', type: 'number', min: 10, max: 200 },
+
+      { group: '出站', key: 'outboundFailTtlMs', label: '失败回复保留时长（毫秒）', hint: '推送失败的一轮回复先留着，超过这个时长就丢弃，5000~600000', type: 'number', min: 5000, max: 600000 },
     ]
 
     // ── 样式 ────────────────────────────────────────────────

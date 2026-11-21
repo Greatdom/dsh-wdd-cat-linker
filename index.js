@@ -24,6 +24,8 @@ import {
   HEARTBEAT_INTERVAL_MS,
   INBOUND_INTERVAL_MS,
   LOG_UPLOAD_LIMIT,
+  OUTBOUND_FAIL_TTL_MS,
+  OUTBOUND_SWEEP_INTERVAL_MS,
   REQUEST_TIMEOUT_MS,
 } from './src/common/constant.js'
 /** 插件名（cordis 用它做去重/卸载标识）。 */
@@ -42,6 +44,8 @@ export const Config = Schema.object({
     .description('单次请求超时（毫秒）'),
   logUploadLimit: Schema.number().default(LOG_UPLOAD_LIMIT)
     .description('每次心跳上报几条日志给中转站（10~200）'),
+  outboundFailTtlMs: Schema.number().default(OUTBOUND_FAIL_TTL_MS)
+    .description('推送失败的出站消息保留多久再丢弃（毫秒，5000~600000）'),
   systemPrompt: Schema.string().default('')
     .description('无状态模式下的固定人设；留空则只抹历史、不改系统提示词'),
 })
@@ -70,6 +74,18 @@ export function apply(ctx, config) {
   })
   const finder = new SessionFinder(ctx, log)
   const cache = new MessageCache()
+
+  /**
+   * 这次清理按多长的 ttl 算。
+   *
+   * 每轮现读设置：改完下一轮扫描（10 秒后）就按新值判断，不用重启 DSH。
+   * 拿不到或非法时退回默认值，区间与 setting_store.SPEC 保持一致。
+   */
+  const outboundFailTtlMs = () => {
+    const value = Number(settings.outboundFailTtlMs)
+    if (!Number.isFinite(value)) return OUTBOUND_FAIL_TTL_MS
+    return Math.max(5000, Math.min(600000, Math.round(value)))
+  }
 
   // ── 本地配置 ──────────────────────────────────────────────
   const store = new LocalStore({
@@ -196,6 +212,18 @@ export function apply(ctx, config) {
     if (!settings.enabled) return
     void inbound.tick()
   }, settings.inboundIntervalMs)
+
+  // ── 失败出站清理 ──────────────────────────────────────────
+  // 推失败的回复留在出站池里，过了 outboundFailTtlMs 就丢掉。
+  // 每次现读设置：改 ttl 立即生效，扫描频率（10 秒）与它无关。
+  ctx.interval(() => {
+    if (!settings.enabled) return
+    try {
+      outbound.sweepFailed(outboundFailTtlMs())
+    } catch (error) {
+      log('清理失败出站消息出错：' + String((error && error.message) || error))
+    }
+  }, OUTBOUND_SWEEP_INTERVAL_MS)
 
   // ── 卸载清理 ──────────────────────────────────────────────
   ctx.effect(() => () => {

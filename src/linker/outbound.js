@@ -83,7 +83,8 @@ export class Outbound {
   }
 
   /**
-   * 把出站池里这个会话的回复推给 Java；按 ack 清缓存。
+   * 把这一轮的回复推给 cat 服务器。一轮一个 ack：
+   * 收到 ack（记得带上 sessionId）就整轮删掉，没收到就标 FAILED 等定时器清理。
    */
   async push(sessionId, archiveId, messages, origin) {
     try {
@@ -110,14 +111,43 @@ export class Outbound {
           text: m.text,
         })),
       })
-      const acked = Array.isArray(body && body.data && body.data.items) ? body.data.items : []
-      this.cache.ackOutbound(sessionId, acked.map((i) => i.index))
-      this.log(`推回 Java ${acked.length} 条（存档 ${archiveId}）`)
+
+      // 服务器只在「整轮收下了」时才回 ack；带了别的 sessionId 一律不认
+      const ackedSessionId = String((body && body.data && body.data.sessionId) || '')
+      if (ackedSessionId && ackedSessionId === String(sessionId)) {
+        this.cache.deleteOutbound(sessionId)
+        this.log(`推回 cat ${messages.length} 条（存档 ${archiveId}）`)
+        return true
+      }
+
+      // 没拿到对应 ack：留着，按失败处理
+      this.cache.markOutboundFailed(sessionId)
+      this.log(`推回 cat 没拿到 ack（存档 ${archiveId}），标记待清理`)
+      return false
     } catch (error) {
-      //TODO 推失败留在出站池,但目前没有完成重推逻辑
-      this.log('推回 Java 失败（留在缓存待重推）：'
+      // 推失败留在出站池，由定时器按 outboundFailTtlMs 清掉（暂时不做重推）
+      this.cache.markOutboundFailed(sessionId)
+      this.log('推回 cat 失败（留在出站池待清理）：'
         + String((error && error.message) || error))
+      return false
     }
+  }
+
+  /**
+   * 定期清掉冷却期已过的失败记录。
+   *
+   * 这是「推失败之后怎么办」的当前答案：先留着，过了 outboundFailTtlMs 就丢。
+   * 重推逻辑还没做，所以这里只清理不重发。
+   *
+   * @param {number} ttlMs 失败后留多久
+   */
+  sweepFailed(ttlMs) {
+    const dropped = this.cache.sweepFailedOutbound(ttlMs)
+    for (const entry of dropped) {
+      this.log(`丢弃推送失败的一轮出站消息（会话 …${String(entry.sessionId).slice(-8)}，`
+        + `${entry.messages.length} 条）`)
+    }
+    return dropped.length
   }
 
   dispose() {

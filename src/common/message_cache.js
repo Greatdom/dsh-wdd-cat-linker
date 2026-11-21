@@ -17,8 +17,8 @@ export class MessageCache {
     this.inbound = new Map()
     /** 已投进 DSH、等这一轮回复的消息：sessionId → 消息 */
     this.pending = new Map()
-    /** 已交卷、等推回 cat 的回复 */
-    this.outbound = []
+    /** 已交卷、等推回 cat 的回复：sessionId → 整轮（一轮一条，跟着一轮一个 ack） */
+    this.outbound = new Map()
   }
 
   // ── 入站池 ──────────────────────────────────────────────
@@ -84,24 +84,84 @@ export class MessageCache {
   }
 
   // ── 出站池 ──────────────────────────────────────────────
+  //
+  // 一个会话一轮只存一条整轮记录，状态三态：
+  //   FLYING  正在推给 cat，等它回 ack
+  //   FAILED  推失败（或没拿到 ack），留着等清理定时器处理
+  // 成功时直接删掉，不需要第三个状态。
 
+  /**
+   * 记下一轮出站消息。
+   *
+   * @param {string} sessionId 哪个会话
+   * @param {string} archiveId 哪个存档
+   * @param {Array<{chatType: string, chatId: string, text: string, index: number}>} messages
+   * @param {object} origin 触发这一轮的入站消息（重推时靠它决定发去哪）
+   */
   putOutbound(sessionId, archiveId, messages, origin) {
-    for (const m of Array.isArray(messages) ? messages : []) {
-      // origin 一起存：推失败要重推时还得靠它决定发去哪
-      this.outbound.push({ sessionId, archiveId, origin, index: m.index, ...m })
-    }
+    const key = String(sessionId)
+    this.outbound.set(key, {
+      sessionId: key,
+      archiveId,
+      origin,
+      messages: (Array.isArray(messages) ? messages : []).map((m) => ({ ...m })),
+      status: OutboundStatus.FLYING,
+      updatedAt: Date.now(),
+    })
   }
 
+  /** 当前出站池（调试/排障看）。 */
   peekOutbound() {
     return this.outbound
   }
 
+  /** 看一个会话的出站记录，不删。 */
+  peekOutboundOf(sessionId) {
+    return this.outbound.get(String(sessionId))
+  }
+
+  /** 推成功：整轮删掉。 */
+  deleteOutbound(sessionId) {
+    this.outbound.delete(String(sessionId))
+  }
+
+  /** 推失败：标成 FAILED 并刷新时间，等定时器按 ttl 清理。 */
+  markOutboundFailed(sessionId) {
+    const key = String(sessionId)
+    const entry = this.outbound.get(key)
+    if (!entry) return
+    entry.status = OutboundStatus.FAILED
+    entry.updatedAt = Date.now()
+  }
+
   /**
-   * 按 ack 清掉已确认的,推失败时留着
+   * 清掉冷却期已过的 FAILED 记录。
+   *
+   * @param {number} ttlMs 失败之后留多久
+   * @param {number} [now] 当前时间（测试可注入）
+   * @returns {Array<object>} 被清掉的记录，调用方拿去打日志
    */
-  ackOutbound(sessionId, indexes) {
-    const drop = new Set(indexes)
-    this.outbound = this.outbound
-      .filter((item) => !(item.sessionId === sessionId && drop.has(item.index)))
+  sweepFailedOutbound(ttlMs, now = Date.now()) {
+    const dropped = []
+    for (const [key, entry] of this.outbound) {
+      if (entry.status !== OutboundStatus.FAILED) continue
+      if (now - entry.updatedAt < ttlMs) continue
+      this.outbound.delete(key)
+      dropped.push(entry)
+    }
+    return dropped
+  }
+
+  /** 当前出站池里几轮。 */
+  outboundSize() {
+    return this.outbound.size
   }
 }
+
+/** 出站记录的状态。 */
+export const OutboundStatus = Object.freeze({
+  /** 正在推给 cat 服务器，等 ack */
+  FLYING: 'FLYING',
+  /** 推失败 / 没拿到 ack，留着等清理 */
+  FAILED: 'FAILED',
+})

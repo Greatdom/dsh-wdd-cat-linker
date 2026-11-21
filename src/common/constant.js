@@ -27,3 +27,14 @@ export const REQUEST_TIMEOUT_MS = 7000
  * 这里只留「默认值」：Schema 缺省和拿不到设置时的兜底都用它。
  */
 export const LOG_UPLOAD_LIMIT = 50
+
+/**
+ * 推送失败的出站消息留多久再丢掉。
+ *
+ * 当前还没有重推逻辑，失败的消息只是「留一会儿再清」——留这段时间的意义是
+ * 出问题时能在缓存里看到现场。设置项 outboundFailTtlMs 可调（5000~600000）。
+ */
+export const OUTBOUND_FAIL_TTL_MS = 60000
+
+/** 清理失败出站消息的扫描间隔。固定值：改 ttl 不用重启，扫描频率跟它无关。 */
+export const OUTBOUND_SWEEP_INTERVAL_MS = 10000

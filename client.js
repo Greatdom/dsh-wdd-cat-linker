@@ -77,7 +77,7 @@ window.__ModuleLoader__.load({
     // ── 字段定义（决定表单长什么样）────────────────────────
 
     const FIELDS = [
-      { group: '基本', key: 'catBaseUrl', label: 'cat 服务器地址', hint: '本地 Java 业务中转站，如 http://127.0.0.1:8080', type: 'text' },
+      { group: '基本', key: 'catBaseUrl', label: 'cat 服务器地址', hint: 'Java 写的业务中转站，如 http://127.0.0.1:8080', type: 'text' },
 
       { group: '收发开关', key: 'enabled', label: '总开关', hint: '关掉 = 完全不收发', type: 'bool' },
       { key: 'relayOutbound', label: 'DSH → cat 服务器', hint: '模型交卷后把回复推回 cat 服务器，由它转发到外部聊天', type: 'bool' },

@@ -2,9 +2,9 @@
  * DSH ↔ 服务器跳板 —— 插件入口。
  *
  * 业务：
- *   ① 心跳：告诉 Java「这些会话我能服务」，连同会话名；
- *   ② 入站：取 Java 队列 → 落池 → ack → followup 进 DSH 会话；
- *   ③ 出站：模型调 submit_replies 交卷 → turn/end 时推回 Java → 按 ack 清缓存。
+ *   ① 心跳：告诉 cat 服务器「这些会话我能服务」，连同会话名；
+ *   ② 入站：取 cat 服务器队列 → 落池 → ack → followup 进 DSH 会话；
+ *   ③ 出站：模型调 submit_replies 交卷 → turn/end 时推回 cat 服务器 → 按 ack 清缓存。
  */
 
 import Schema from '@deepseek-ai/schemastery'
@@ -38,7 +38,7 @@ export const inject = ['agents', 'sessions', 'sessionTitle', 'timer', 'tools', '
  */
 export const Config = Schema.object({
   enabled: Schema.boolean().default(DEFAULTS.enabled).description('总开关。关着 = 完全不收发'),
-  catBaseUrl: Schema.string().default(DEFAULTS.catBaseUrl).description('本地 Java 中转站地址'),
+  catBaseUrl: Schema.string().default(DEFAULTS.catBaseUrl).description('cat 服务器地址'),
   heartbeatIntervalMs: Schema.number().default(DEFAULTS.heartbeatIntervalMs)
     .description('心跳间隔（毫秒）'),
   inboundIntervalMs: Schema.number().default(DEFAULTS.inboundIntervalMs)

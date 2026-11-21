@@ -11,7 +11,7 @@ export const API = {
   },
   /** 确认入站成功 */
   ack: '/api/inbound_message/ack',
-  /** 一轮回复完成发往Java并返回ack */
+  /** 一轮回复完成，发往 cat 服务器并等待 ack */
   push: '/api/outbound_message/push',
   /** 心跳：传会话,日志,渠道能力 */
   /**第一版只传会话和日志 */

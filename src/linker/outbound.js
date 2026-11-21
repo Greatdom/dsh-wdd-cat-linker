@@ -10,9 +10,9 @@ const SESSION_EVENT = {
 const TURN_REASON = { completed: 'completed' }
 
 /**
- * 出站：DSH → Java。
- * 模型通过 submit_replies 工具交卷，这里在 turn/end 时把这一轮推给 Java。
- * 推成功且 Java 回了 ack，才清掉本地出站缓存。
+ * 出站：DSH → cat 服务器。
+ * 模型通过 submit_replies 工具交卷，这里在 turn/end 时把这一轮推给 cat 服务器。
+ * 推成功且 cat 回了 ack，才清掉本地出站缓存。
  */
 export class Outbound {
   /**

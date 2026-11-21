@@ -1,7 +1,7 @@
 {
   "name": "dsh-wdd-cat-linker",
   "version": "0.2.0",
-  "description": " 黑猫工坊",
+  "description": "黑猫工坊 —— 让 DSH 连接 cat 服务器，进行拉取、处理和推送消息",
   "type": "module",
   "main": "./index.js",
   "exports": {

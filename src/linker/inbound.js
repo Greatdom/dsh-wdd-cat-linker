@@ -126,12 +126,13 @@ export class Inbound {
     const prompt = buildInboundPrompt(message)
 
     await agent.followup({
-      // id 带上存档后缀：同一条消息投给多个存档时不会撞
-      //TODO 不一定是qq-开头,因为以后会接入多渠道消息
-      id: `qq-${message.channelMessageId}-${message.archiveId}`,
+      // id = 渠道消息号 + 存档号：同一条消息投给多个存档时不会撞。
+      // 它只认识 cat 服务器给的消息号（渠道是 cat 那边的事）。
+      id: `${message.channelMessageId}-${message.archiveId}`,
       role: 'user',
       content: [{ type: 'text', text: prompt }],
-      // source.kind 是封闭枚举，没有 'qq'；用 'user' 让 UI 当人话渲染
+      // source.kind 是封闭枚举，只有 user/assistant 这些；
+      // 用 'user' 让界面把它当人话渲染
       source: { kind: 'user' },
     })
 

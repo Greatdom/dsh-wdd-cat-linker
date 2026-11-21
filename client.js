@@ -77,11 +77,11 @@ window.__ModuleLoader__.load({
     // ── 字段定义（决定表单长什么样）────────────────────────
 
     const FIELDS = [
-      { group: '基本', key: 'catBaseUrl', label: '中转站地址', hint: '本地 Java 服务，如 http://127.0.0.1:8080', type: 'text' },
+      { group: '基本', key: 'catBaseUrl', label: 'cat 服务器地址', hint: '本地 Java 业务中转站，如 http://127.0.0.1:8080', type: 'text' },
 
       { group: '收发开关', key: 'enabled', label: '总开关', hint: '关掉 = 完全不收发', type: 'bool' },
-      { key: 'relayOutbound', label: 'DSH → QQ', hint: '模型交卷后把回复推回 Java', type: 'bool' },
-      { key: 'relayInbound', label: 'QQ → DSH', hint: 'Java 队列里的消息投进 DSH 会话', type: 'bool' },
+      { key: 'relayOutbound', label: 'DSH → cat 服务器', hint: '模型交卷后把回复推回 cat 服务器，由它转发到外部聊天', type: 'bool' },
+      { key: 'relayInbound', label: 'cat 服务器 → DSH', hint: '取 cat 服务器队列里的消息投进 DSH 会话', type: 'bool' },
 
       { group: '节奏', key: 'heartbeatIntervalMs', label: '心跳间隔（毫秒）', hint: '1000~60000', type: 'number', min: 1000, max: 60000 },
       { key: 'inboundIntervalMs', label: '拉队列间隔（毫秒）', hint: '300~30000', type: 'number', min: 300, max: 30000 },
@@ -272,7 +272,7 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'ck-wrap' },
         h('div', { className: 'ck-title' }, '黑猫工坊'),
         h('div', { className: 'ck-desc' },
-          '这两个进程之间的接线。改完立即生效，跳板下一轮心跳就会用新值。'),
+          'DSH 与 cat 服务器之间的接线。改完立即生效，下一轮心跳 / 拉取就会用新值。'),
 
         probeBar(probe),
 

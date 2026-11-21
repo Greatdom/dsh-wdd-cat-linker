@@ -13,8 +13,6 @@
  *      每步都抹会把上一步的工具结果一起抹掉
  */
 
-import { INBOUND_MARK } from '../common/constant.js'
-
 const textOf = (message) =>
   (message.content || [])
     .filter((b) => b.type === 'text')
@@ -61,9 +59,10 @@ function wipeHistory(session, anchor, log) {
  * @param {object} agentCtx agent 自己的 cordis 上下文
  * @param {object} options
  * @param {string} options.systemPrompt 这个存档的人设
+ * @param {import('../common/message_cache.js').MessageCache} options.cache 消息池，用来判定「本轮是不是外部消息触发的」
  * @param {(text: string) => void} options.log
  */
-export function takeOverSession(agentCtx, { systemPrompt, log }) {
+export function takeOverSession(agentCtx, { systemPrompt, cache, log }) {
   /** 已处理过的提示词 id，防止多步调用重复抹除。 */
   const wiped = new Set()
   /** 等落盘的提示词：id → anchor。pre-step 登记，session/event 认领。 */
@@ -141,16 +140,23 @@ export function takeOverSession(agentCtx, { systemPrompt, log }) {
       .filter((text) => text.length > 0)
 
     // **只在外部消息触发时才接管**。
-    // 判断依据是 inbound 拼进去的前缀，界面上手打不可能带上它。
+    //
+    // 和 schedule_guard 用同一套判据：这个会话在 pending 池里还有没出站的外部消息，
+    // 就说明这一轮是外部聊天触发的；界面上手打不会往 pending 池里放东西。
     // 不是外部触发就原样放行 —— 用户正常对话一个字都不能动。
-    const external = userTexts.filter((t) => t.includes(INBOUND_MARK))
-    if (external.length === 0) {
-      log(`pre-step：${userTexts.length} 条用户消息里没有外部标记，放行`)
+    //
+    // 副作用（已知，接受）：模型某轮没调用 submit_replies 交卷时，pending 会一直留着，
+    // 那个会话里用户在界面上手打的对话也会被当成外部轮、历史被抹。
+    const sessionId = String((agent && (agent.session?.id || agent.sessionId)) || '')
+    if (!sessionId || !cache || typeof cache.peekPending !== 'function'
+        || !cache.peekPending(sessionId)) {
+      log(`pre-step：会话 …${sessionId.slice(-8) || '?'} 没有待应答的外部消息，放行`)
       return decision
     }
 
-    // 严格无状态：只留外部消息那几条，界面上的插话一并丢掉
-    const prompt = makeUserMessage(external.join('\n\n'))
+    // 严格无状态：只留用户输入（外部消息 + 界面上同轮的插话），
+    // 运行时上下文那类噪音在上一步已经滤掉了。
+    const prompt = makeUserMessage(userTexts.join('\n\n'))
 
     // 本轮提示词落盘时的 surface 长度 —— 它之前的一切才是「历史」。
     // agent 由 agent 级 ctx 的 waterfall 注入；万一没给就跳过抹除，
@@ -167,7 +173,7 @@ export function takeOverSession(agentCtx, { systemPrompt, log }) {
     const anchor = session.surface.nodes.length
     pending.set(prompt.id, anchor)
 
-    log(`turn ${turn} 无状态接管，${messages.length} 条输入只留 ${external.length} 条外部消息`)
+    log(`turn ${turn} 无状态接管，${messages.length} 条输入只留 ${userTexts.length} 条用户消息`)
     return {
       kind: 'enter',
       messages: [prompt],

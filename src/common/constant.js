@@ -19,20 +19,11 @@ export const INBOUND_INTERVAL_MS = 2000
 export const REQUEST_TIMEOUT_MS = 7000
 
 /**
- * 外部消息正文的前缀
+ * 日志上限的两个数各归各位：
  *
- * 用它给「这一轮是不是外部消息触发」一个可靠判断：只有 inbound 会拼这个前缀，
- * 用户在界面上手打不可能带上。无状态上下文靠它决定抹不抹历史 ——
- * 抹错了会毁掉用户的正常对话。
+ *   · 缓冲容量 —— 在 logger.js 里定死，属于内存上限，不是可调项；
+ *   · 上报条数 —— 设置项 logUploadLimit（10~200，默认见下），心跳每轮现读。
+ *
+ * 这里只留「默认值」：Schema 缺省和拿不到设置时的兜底都用它。
  */
-export const INBOUND_MARK = '【来自外部聊天】'
-
-/** 外部消息正文末尾追加的固定提示。 */
-export const INBOUND_SUFFIX = '（回复必须调用 submit_replies 工具，否则对方收不到。）'
-
-/**
- * 日志管理器
- */
-export const CAPACITY = 200
-
 export const LOG_UPLOAD_LIMIT = 50

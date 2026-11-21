@@ -127,6 +127,7 @@ export function apply(ctx, config) {
     try {
       takeOverSession(agent.ctx, {
         systemPrompt: settings.systemPrompt,
+        cache,
         log,
       })
       log(`接管会话 …${String(agent.session?.id || '').slice(-8)} 的无状态上下文`)
@@ -145,6 +146,7 @@ export function apply(ctx, config) {
         try {
           takeOverSession(agent.ctx, {
             systemPrompt: settings.systemPrompt,
+            cache,
             log,
           })
           resumed++

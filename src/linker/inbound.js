@@ -1,9 +1,9 @@
 /** 专门管消息入站业务 */
 
 import { API } from '../common/api.js'
-import { INBOUND_MARK, INBOUND_SUFFIX } from '../common/constant.js'
 import { shortId } from '../common/session_finder.js'
 import { plainText, summarize } from '../common/media.js'
+import { buildInboundPrompt } from '../utils/prompt_builder.js'
 
 /**
  * 入站：Java → DSH。
@@ -121,11 +121,9 @@ export class Inbound {
       return
     }
 
-    // 正文里带上来源，模型才知道这轮该用 submit_replies 回出去，
-    // 而不是当成界面上的闲聊。前缀也是无状态上下文识别外部消息的依据。
-    const prompt = `${INBOUND_MARK}${message.chatType === 'group' ? '群聊' : '私聊'}`
-      + ` ${message.chatId}，发送者 ${message.senderName || message.senderId || '未知'}：\n`
-      + `${text}\n\n${INBOUND_SUFFIX}`
+    // 正文的拼装（外部来源标记 + 固定后缀）在 utils/prompt_builder.js ——
+    // 提示词工程归一处，这里只负责搬运。
+    const prompt = buildInboundPrompt(message)
 
     await agent.followup({
       // id 带上存档后缀：同一条消息投给多个存档时不会撞

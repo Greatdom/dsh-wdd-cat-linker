@@ -1,13 +1,10 @@
 /**
  * DSH ↔ 服务器跳板 —— 插件入口。
  *
- * 本文件只做装配，不含业务判断：
+ * 业务：
  *   ① 心跳：告诉 Java「这些会话我能服务」，连同会话名；
  *   ② 入站：取 Java 队列 → 落池 → ack → followup 进 DSH 会话；
  *   ③ 出站：模型调 submit_replies 交卷 → turn/end 时推回 Java → 按 ack 清缓存。
- *
- * Java 中转站（cat）承担全部业务：OneBot 通信、消息段翻译、合并、
- * 攒批、限流、图片处理、身份与提示词渲染。
  */
 
 import Schema from '@deepseek-ai/schemastery'
@@ -32,21 +29,6 @@ import {
 /** 插件名（cordis 用它做去重/卸载标识）。 */
 export const name = 'dsh-wdd-cat-linker'
 
-/**
- * 依赖注入清单。少一个都会让插件不激活，所以只列真正用到的。
- *
- * <p>枚举会话和取名字全靠这三个：
- * <ul>
- *   <li>{@code sessions} —— 会话服务；</li>
- *   <li>{@code sessionTitle} —— 标题服务，活会话的取名来源；</li>
- *   <li>{@code workspaceRegistry} —— <b>工作区记着的 sessionIds</b>，
- *       没打开的会话主要靠它。</li>
- * </ul>
- * 不声明就取不到，表现就是「只看到活会话」。
- *
- * <p>sessionController / sessionQuery 不在这里：它们通过 ctx.get() 惰性取，
- * 缺失只降级成「不恢复会话 / 读不到磁盘标题」。
- */
 export const inject = ['agents', 'sessions', 'sessionTitle', 'timer', 'tools', 'workspaceRegistry']
 
 export const Config = Schema.object({
@@ -127,13 +109,9 @@ export function apply(ctx, config) {
   }
 
   // ── 日程工具拦截 ──────────────────────────────────────────
-  // 日程归 Java 的 ScheduleService 管，内置工具直连会另建一套数据。
-  // 只拦 cat 服务器推来的那一轮，界面直接聊天不受影响。
   blockScheduleTools(ctx, cache, log)
 
-  // ── 无状态上下文：严格照 dsh-wdd-context 的写法 ──────────────
-  // 它实测能跑通，所以这里不用 ctx.effect 包、不用白名单，
-  // 只把「哪些轮次算外部消息」的判断放进 pre-step。
+  // ── 无状态上下文 ──────────────
   ctx.on('agent/created', ({ agent }) => {
     if (!settings.enabled) return
     if (!agent) {
@@ -155,7 +133,7 @@ export function apply(ctx, config) {
     }
   })
 
-  // 已在运行的 agent 不会再触发 agent/created —— 补接管一次
+  // 已在运行的 agent 不会再触发 agent/created —— 补接管一次以触发无状态上下文
   try {
     const agents = ctx.get?.('agents') ?? ctx.agents
     if (agents && typeof agents.list === 'function') {
@@ -178,7 +156,7 @@ export function apply(ctx, config) {
     log('枚举已有 agent 失败：' + String((error && error.message) || error))
   }
 
-  // ── 出站：监听一轮结束 ────────────────────────────────────
+  // ── 出站 ────────────────────────────────────
   ctx.effect(() => {
     const dispose = ctx.on('session/event', (session, event) => {
       if (!settings.enabled) return
@@ -198,20 +176,18 @@ export function apply(ctx, config) {
     }
   }, 'dsh-wdd-cat-linker: 出站监听会话事件')
 
-  // ── 定时器 ────────────────────────────────────────────────
+  // ── 心跳 ────────────────────────────────────────────────
   if (typeof ctx.interval !== 'function') {
-    log('宿主没提供 timer（ctx.interval 不存在）—— QQ → DSH 收不到消息')
+    log('宿主没提供 timer（ctx.interval 不存在）—— 服务器 → DSH 收不到消息')
     return
   }
-  // ctx.interval 内部已托管清理，不要再包 ctx.effect。
   ctx.interval(() => {
     if (!settings.enabled) return
-    // 心跳顺手算出了完整会话表，inbound 直接拿来去取消息
     void heartbeat.tick().then(() => {
       inbound.setSessionIds([...heartbeat.sessions.keys()])
     })
   }, settings.heartbeatIntervalMs)
-
+  // ── 入站 ────────────────────────────────────────────────
   ctx.interval(() => {
     if (!settings.enabled) return
     void inbound.tick()
@@ -225,7 +201,6 @@ export function apply(ctx, config) {
   }, 'dsh-wdd-cat-linker: 卸载清理')
 
   // ── 启动：立刻报一次心跳 ──────────────────────────────────
-  // apply() 不能是 async（cordis 不等它），所以放自执行块。
   void (async () => {
     if (!settings.enabled) {
       log('总开关是关的，不发心跳也不取消息')

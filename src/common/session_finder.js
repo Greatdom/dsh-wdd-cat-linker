@@ -1,6 +1,5 @@
-/** 专门管理会话检索和匹配,以及会话归一化业务 */
-
 import { SESSION_PREFIX, SHORT_ID_LEN } from '../common/constant.js'
+
 
 /** 去掉 session- 前缀。 */
 export function sessionKey(id) {
@@ -8,7 +7,7 @@ export function sessionKey(id) {
   return s.startsWith(SESSION_PREFIX) ? s.slice(SESSION_PREFIX.length) : s
 }
 
-/** 短 id，日志用。 */
+/** 短 id，日志用 */
 export function shortId(id) {
   return sessionKey(id).slice(-SHORT_ID_LEN)
 }
@@ -20,54 +19,24 @@ export function idVariants(raw) {
     : [raw, SESSION_PREFIX + raw]
 }
 
+
 /**
- * 会话查找：从 DSH 宿主拿到 agent 和会话清单。
- *
- * <p>枚举会话与取名字都走 {@code sessionQuery} —— 它能读磁盘上的全部会话，
- * 不要求会话打开着：
- * <ul>
- *   <li>{@code listSessions()} —— 全部会话；</li>
- *   <li>{@code readTitle(id)} —— 从会话日志里折叠出标题，没打开的也行。</li>
- * </ul>
- *
- * <p>{@code agents.list()} 只返回内存里挂着的 agent，只能当兜底 ——
- * 存档要绑的会话是「存在」就够，现在没打开不代表不能用。
+ * 会话查找器
  */
 export class SessionFinder {
-  /**
-   * @param {object} ctx cordis 上下文
-   * @param {(text: string) => void} [log] 日志口，排障时用
-   */
   constructor(ctx, log) {
     this.ctx = ctx
     this.log = log || null
-    /** 取到的服务缓存：插件生命周期内不变。 */
+    /** 取到的服务缓存 */
     this.services = new Map()
-    /** 全局的 sessionId → 会话名缓存。 */
+    /** 全局的 sessionId → 会话名缓存 */
     this.titleCache = new Map()
   }
 
-  /** 兼容 ctx.get(name) 与 ctx[name] 两种写法。 */
-  #service(name) {
-    if (this.services.has(name)) return this.services.get(name)
-    let value
-    try {
-      value = this.ctx.get?.(name)
-    } catch {
-      value = undefined
-    }
-    if (value === undefined || value === null) value = this.ctx[name]
-    // 只缓存拿到的：服务可能比插件晚就绪，把 undefined 缓存住就永远拿不到了
-    if (value !== undefined && value !== null) {
-      this.services.set(name, value)
-    }
-    return value
-  }
+  
 
   /**
    * 全部会话，含没加载到内存的。
-   *
-   * @returns {Promise<Map<string, string>>} sessionId → 会话名（拿不到名字时给空串）
    */
   async getAllSessions() {
     const out = new Map()
@@ -190,18 +159,6 @@ export class SessionFinder {
 
   /**
    * 会话显示名。
-   *
-   * <p>取名的顺序（能拿到就用）：
-   * <ol>
-   *   <li>{@code sessionQuery.readTitle(id)} —— 从会话日志折叠标题，没打开的也行；</li>
-   *   <li>{@code sessionTitle.get(session)} —— 标题服务要真的 session 对象；</li>
-   *   <li>{@code sessions.get(id).title} —— 会话对象自带的；</li>
-   *   <li>{@code agents.get(id).session.title} —— 活 agent 上带的。</li>
-   * </ol>
-   *
-   * @param {string} sessionId
-   * @param {boolean} [verbose] 排障用：把每个来源的实际结果都记下来
-   * @returns {Promise<string>} 会话名；拿不到返回 ''
    */
   async sessionTitle(sessionId, verbose = false) {
     const raw = String(sessionId == null ? '' : sessionId).trim()
@@ -330,6 +287,24 @@ export class SessionFinder {
     }
     return undefined
   }
+
+  /** 缓存服务 */
+  #service(name) {
+    if (this.services.has(name)) return this.services.get(name)
+    let value
+    try {
+      value = this.ctx.get?.(name)
+    } catch {
+      value = undefined
+    }
+    if (value === undefined || value === null) value = this.ctx[name]
+    // 只缓存拿到的：服务可能比插件晚就绪，把 undefined 缓存住就永远拿不到了
+    if (value !== undefined && value !== null) {
+      this.services.set(name, value)
+    }
+    return value
+  }
+
 }
 
 /**

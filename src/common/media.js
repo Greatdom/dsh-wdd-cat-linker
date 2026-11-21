@@ -11,7 +11,7 @@ export function plainText(content) {
   return ''
 }
 
-/** 压成一行，日志用。 */
+/** 压成一行,用于日志 */
 export function summarize(text, max = 40) {
   const flat = String(text || '').replace(/\s+/g, ' ').trim()
   return flat.length > max ? flat.slice(0, max) + '…' : flat

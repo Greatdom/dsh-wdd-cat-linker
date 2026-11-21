@@ -1,4 +1,4 @@
-/** 跳板本地配置持久化;不从java读取配置,因为跳板配置和中转站服务器的配置是独立的 */
+/** 跳板本地配置管理*/
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -17,8 +17,7 @@ export const STYLE_PATH = ROUTE_PREFIX + '/style'
 const STYLE_FILE = fileURLToPath(new URL('../asset/settings.css', import.meta.url))
 
 /**
- * 读设置页样式文本；读不到返回 null。
- * <p>每次现读不缓存：改完 css 刷新页面就能看到，不用重启 DSH。
+ * 读设置页样式文本
  */
 export function readStyleText() {
   try {
@@ -30,7 +29,6 @@ export function readStyleText() {
 
 /**
  * 允许设置页改的键。
- * <p>存档不在这里：它由 Java 完全托管（/archives 页面），跳板只读不存。
  */
 export const EDITABLE_KEYS = Object.freeze([
   'enabled',
@@ -44,10 +42,6 @@ export const EDITABLE_KEYS = Object.freeze([
 
 /**
  * 配置文件位置。
- * <p>优先用 cordis 给的 baseUrl（那是 profile 目录），拿不到就退到 cwd。
- *
- * @param {object} ctx cordis 上下文
- * @returns {string} 绝对路径
  */
 export function configFilePath(ctx) {
   let base = null
@@ -55,7 +49,7 @@ export function configFilePath(ctx) {
     const url = ctx?.baseUrl || ctx?.fiber?.ctx?.baseUrl
     if (url) base = new URL('.', url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
   } catch {
-    // 拿不到就退到 cwd
+    // 拿不到就退到工作目录
   }
   if (!base) {
     base = process.cwd()
@@ -64,25 +58,15 @@ export function configFilePath(ctx) {
 }
 
 /**
- * 本地配置存储：读文件 / 写文件 / 合并到运行时配置。
- *
- * <p>为什么不存 Java：地址是「Java 在哪」，存在 Java 里就是循环依赖 ——
- * Java 没起来时连「改哪个地址」都改不了。
+ * 本地配置存储器
  */
 export class LocalStore {
-  /**
-   * @param {object} deps
-   * @param {string} deps.file     配置文件绝对路径
-   * @param {object} deps.settings 运行时配置（可变，会被就地更新）
-   * @param {(text: string, meta?: object) => void} deps.log
-   */
   constructor({ file, settings, log }) {
     this.file = file
     this.settings = settings
     this.log = log
   }
 
-  /** 读磁盘上的覆盖值；没有返回空对象。 */
   read() {
     if (!existsSync(this.file)) {
       return {}
@@ -93,7 +77,7 @@ export class LocalStore {
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         return {}
       }
-      // 只认还认识的键：老文件里可能有已经删掉的项
+      // 只认还认识的键,老文件里可能有已经删掉的项
       const out = {}
       for (const key of EDITABLE_KEYS) {
         if (Object.prototype.hasOwnProperty.call(parsed, key)) {
@@ -107,7 +91,7 @@ export class LocalStore {
     }
   }
 
-  /** 把磁盘上的值合并进运行时配置。启动时调一次。 */
+  /** 启动时调一次。 */
   hydrate() {
     const stored = this.read()
     const keys = Object.keys(stored)
@@ -120,7 +104,7 @@ export class LocalStore {
     this.log(`已载入 ${keys.length} 项本地配置`)
   }
 
-  /** 当前配置的可编辑视图。 */
+  /** 当前配置的可编辑视图 */
   snapshot() {
     const out = {}
     for (const key of EDITABLE_KEYS) {
@@ -129,12 +113,7 @@ export class LocalStore {
     return out
   }
 
-  /**
-   * 保存：只收白名单里的键，值会做类型规整和区间夹取。
-   *
-   * @param {object} incoming
-   * @returns {{changed: number, values: object}}
-   */
+ 
   save(incoming) {
     if (!incoming || typeof incoming !== 'object') {
       return { changed: 0, values: this.snapshot() }
@@ -159,7 +138,7 @@ export class LocalStore {
     return { changed, values: this.snapshot() }
   }
 
-  /** 写盘。失败只记日志，不阻断。 */
+  /** 落盘 */
   #persist(data) {
     try {
       mkdirSync(join(this.file, '..'), { recursive: true })
@@ -183,7 +162,7 @@ const SPEC = {
   requestTimeoutMs: { type: 'number', min: 1000, max: 60000 },
 }
 
-/** 按类型规整；不合法返回 undefined（表示跳过）。 */
+/** 按类型规整 */
 function normalize(key, raw) {
   const spec = SPEC[key]
   if (!spec) {
@@ -206,22 +185,7 @@ function normalize(key, raw) {
 }
 
 /**
- * 在宿主上注册配置读写路由。
- *
- * <p>⚠ 宿主的 webServer <b>不是 Express</b>，没有 use()。它的形状是：
- * <pre>
- *   webServer.register({ kind: 'exact' | 'prefix', path, handler(req, res) })
- *   → 返回 disposer
- * </pre>
- * handler 收的是 Node 原生的 IncomingMessage / ServerResponse，
- * 所以路由匹配和 body 解析都得自己做。
- *
- * <p>为什么要自己注册路由而不是让页面直接打 Java：配置是「Java 在哪」，
- * 让页面跨域去 Java 读，Java 没起来就死锁。
- *
- * @param {object} webCtx   已经拿到 webServer 的 cordis 上下文
- * @param {LocalStore} store
- * @returns {(() => void) | undefined} 解绑函数
+ * 在宿主上注册配置读写路由
  */
 export function registerRoutes(webCtx, store) {
   const webServer = webCtx?.webServer
@@ -265,7 +229,7 @@ export function registerRoutes(webCtx, store) {
     })
   }
 
-  /** 样式：把 asset/settings.css 原样吐出去。 */
+  /** 样式阅读器 */
   const styleHandler = (_req, res) => {
     const css = readStyleText()
     res.statusCode = css === null ? 404 : 200
@@ -274,7 +238,6 @@ export function registerRoutes(webCtx, store) {
     res.end(css === null ? '/* settings.css 读不到 */' : css)
   }
 
-  // exact：只认这两个路径，不吞掉别的
   const disposers = []
   disposers.push(webServer.register({ kind: 'exact', path: CONFIG_PATH, handler: configHandler }))
   disposers.push(webServer.register({ kind: 'exact', path: STYLE_PATH, handler: styleHandler }))

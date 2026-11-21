@@ -1,27 +1,5 @@
-/** client.js 从api.js得到url,从asset文件夹得到资产 */
-
 /**
- * 跳板的浏览器端：在 DSH 设置左侧栏加一页「通到 QQ」。
- *
- * ---- 为什么不用 DSH 的配置表单组件 ----
- *
- * DSH 的 ctx.configForms 只认 include 条目，通过 profile.bundles 装进来的插件
- * 拿不到配置表单。所以这里走自己的一条路：
- *
- *   跳板的 /wdd-cat-linker/config   ←→   本文件里的原生表单
- *
- * 好处：改配置不需要重启 DSH，也不用重载插件（重载会丢内存状态）；
- * 跳板下一轮心跳自然读到新值，不需要任何通知机制。
- *
- * ---- 存档不在这里 ----
- *
- * 存档由 Java 完全托管，去 Java 的 /archives 页面管。存两份会打架。
- *
- * ---- 加载格式 ----
- *
- *   window.__ModuleLoader__.load({ id, factory: (require) => ... })
- *
- * React 由宿主注入。
+ * 设置插槽
  */
 
 window.__ModuleLoader__.load({
@@ -36,12 +14,12 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
 
-    /** 配置读写走宿主同源路由：页面和它同源，不跨域也不打 Java。 */
+    /** 配置读写路径 */
     const CONFIG_PATH = '/wdd-cat-linker/config'
 
     // ── 取值 ────────────────────────────────────────────────
 
-    /** 读；失败返回 null，不抛（页面不该因为一次网络抖动白屏）。 */
+    /** 读；失败返回 null，不抛,因为页面不该因为一次网络抖动白屏。 */
     const get = (path) =>
       fetch(path, { cache: 'no-store' })
         .then((r) => (r.ok ? r.json() : null))
@@ -59,9 +37,6 @@ window.__ModuleLoader__.load({
 
     /**
      * 探测中转站是否可达。
-     *
-     * 直接打目标地址的 /api/health —— 这是跨域请求，所以 Java 侧的
-     * WebCorsConfig 仍需保留。
      */
     async function probeServer(baseUrl) {
       const base = String(baseUrl || '').trim().replace(/\/+$/, '')
@@ -114,15 +89,11 @@ window.__ModuleLoader__.load({
     ]
 
     // ── 样式 ────────────────────────────────────────────────
-    // 外观是 src/asset/settings.css，这里只把它插进 <head>。
-    //
-    // 为什么不在这个文件里写样式对象：改外观要动逻辑文件，容易误伤；
-    // 样式和结构本来就该分开。css 文件由宿主端读，这里 fetch 拿文本。
 
     const STYLE_PATH = '/wdd-cat-linker/style'
     const STYLE_ID = 'cat-linker-settings-style'
 
-    /** 兜底：路由拿不到 css 时至少别裸奔。 */
+    /** 样式兜底 */
     const FALLBACK_CSS = `
       .ck-wrap{padding:16px 18px 24px;font-size:13px;line-height:1.7;max-width:760px}
       .ck-title{font-size:18px;font-weight:600;margin:0 0 4px}
@@ -194,7 +165,7 @@ window.__ModuleLoader__.load({
         return result
       }
 
-      // 首次拉配置（走宿主同源路由，不需要 Java 在线）
+      // 首次拉配置
       React.useEffect(() => {
         let alive = true
         void loadStyle().then((text) => { if (alive) injectStyle(text) })
@@ -211,13 +182,13 @@ window.__ModuleLoader__.load({
         return () => { alive = false }
       }, [])
 
-      /** 改一个字段（只改草稿，不落盘）。 */
+      /** 改一个字段。 */
       const edit = (key, value) => {
         setDraft((old) => (old ? { ...old, [key]: value } : old))
         setMsg('')
       }
 
-      /** 保存。不要求 Java 在线 —— 配置存在跳板本地。 */
+      /** 保存  */
       const save = async () => {
         if (!draft) return
         setBusy(true)
@@ -243,12 +214,12 @@ window.__ModuleLoader__.load({
 
       if (loadError) {
         return h('div', { className: 'ck-wrap' },
-          h('div', { className: 'ck-title' }, '通到 QQ'),
+          h('div', { className: 'ck-title' }, '黑猫工坊'),
           h('div', { className: 'ck-err' }, loadError))
       }
       if (!state || !draft) {
         return h('div', { className: 'ck-wrap' },
-          h('div', { className: 'ck-title' }, '通到 QQ'),
+          h('div', { className: 'ck-title' }, '黑猫工坊'),
           h('div', { className: 'ck-desc' }, '读取中…'))
       }
 
@@ -297,7 +268,7 @@ window.__ModuleLoader__.load({
       }
 
       return h('div', { className: 'ck-wrap' },
-        h('div', { className: 'ck-title' }, '通到 QQ'),
+        h('div', { className: 'ck-title' }, '黑猫工坊'),
         h('div', { className: 'ck-desc' },
           '这两个进程之间的接线。改完立即生效，跳板下一轮心跳就会用新值。'),
 
@@ -368,7 +339,7 @@ window.__ModuleLoader__.load({
           name: 'settings.section',
           id: 'wdd-cat-linker',
           order: 54,
-          label: () => '通到 QQ',
+          label: () => '黑猫工坊',
         },
         LinkerSection,
       ))

@@ -1,10 +1,5 @@
 /**
- * 专门用来连接服务器。
- *
- * 方向只有一条：**跳板 → Java**。Java 从不回调 DSH 宿主，因为宿主对非 Electron
- * 渲染进程的请求一律返回 403（"Browser access is disabled"）。
- *
- * 失败一律抛 BridgeError，由调用方决定重试还是跳过 —— 这里不吞异常。
+ * 服务器连接桥,用来处理http请求
  */
 
 import { REQUEST_TIMEOUT_MS } from '../common/constant.js'

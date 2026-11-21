@@ -1,19 +1,9 @@
-/**
- * submit_replies 工具：模型交卷的唯一出口。
- *
- * 为什么用工具而不是让它自己吐 JSON：工具的 parameters 就是 schema，
- * 模型要交卷就必须按这个形状填，格式由宿主保证，不用手工容错解析。
- *
- * 一轮交一次卷，交完由 outbound 在 turn/end 时统一推给 Java。
- */
-
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
-/** 工具名。 */
 export const SUBMIT_REPLIES = 'submit_replies'
 
 /**
- * 造一个 submit_replies 工具。
+ * submit_replies 工具:令模型强制按指定格式回复
  *
  * @param {object} deps
  * @param {(draft: object) => void} deps.onSubmit 交卷回调
@@ -69,7 +59,6 @@ export function createSubmitRepliesTool({ onSubmit, log }) {
     },
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      // exec 的形状随版本不同，几种写法都试一遍
       const sessionId = String(
         (exec && exec.session && (exec.session.id || exec.session.sessionId))
         || (exec && exec.sessionId)

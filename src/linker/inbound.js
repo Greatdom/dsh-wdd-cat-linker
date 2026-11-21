@@ -10,8 +10,7 @@ import { plainText, summarize } from '../common/media.js'
  *
  * 一轮做这些：
  *   1. 按自己报的会话清单去 Java 取；
- *   2. **取到就立刻 ack**（用户定的语义：跳板只要成功拿到消息就 ack，
- *      ack 之后才判断会话在不在，不在就自行丢弃）；
+ *   2. **取到就立刻 ack**
  *   3. 按 sessionId 恢复 DSH 会话并 followup。
  */
 export class Inbound {
@@ -92,6 +91,11 @@ export class Inbound {
     }))
     try {
       await this.bridge.post(API.ack, { items })
+
+      for (const message of messages) {
+        this.cache.deleteInbound(message)
+      } 
+
     } catch (error) {
       this.log('ack 失败：' + String((error && error.message) || error))
     }

@@ -2,7 +2,9 @@
 
 import { API } from '../common/api.js'
 
-const LOG_UPLOAD_LIMIT = 50
+import { LOG_UPLOAD_LIMIT } from '../common/constant.js'
+
+
 
 /**
  * 心跳：
@@ -30,7 +32,7 @@ export class Heartbeat {
     this.failed = false
   }
 
-  /** 心跳入口。上一轮没跑完就复用它的 Promise。 */
+  /** 心跳入口。上一轮没跑完就复用上一轮心跳 */
   tick() {
     if (this.stopped) return Promise.resolve()
     if (this.running) return this.running

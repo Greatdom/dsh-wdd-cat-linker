@@ -11,10 +11,7 @@ const TURN_REASON = { completed: 'completed' }
 
 /**
  * 出站：DSH → Java。
- *
  * 模型通过 submit_replies 工具交卷，这里在 turn/end 时把这一轮推给 Java。
- * 只发 reason.kind === 'completed' 的轮次；被中断的一轮一个字都不发。
- *
  * 推成功且 Java 回了 ack，才清掉本地出站缓存。
  */
 export class Outbound {
@@ -28,18 +25,18 @@ export class Outbound {
     this.bridge = bridge
     this.cache = cache
     this.log = log
-    /** sessionId → 本次交卷的草稿（还没到 turn/end）。 */
+    /** sessionId → 本次交卷的草稿 */
     this.drafts = new Map()
   }
 
-  /** 工具交卷时调用，先攒着，等 turn/end 再统一发。 */
+  /** 工具交卷回调函数。 */
   submit(draft) {
     if (!draft || !draft.sessionId) return
     this.log(`交卷 ${draft.replies.length} 条（会话 …${draft.sessionId.slice(-8)}）`)
     this.drafts.set(draft.sessionId, draft)
   }
 
-  /** 挂到 ctx.on('session/event')。 */
+  /** 出站核心方法 */
   handleSessionEvent(session, event) {
     if (!event || event.type !== SESSION_EVENT.turnEnd) return
     // 会话 id 三种写法都试：session.id / session.sessionId / 事件里带的
@@ -52,10 +49,8 @@ export class Outbound {
 
   async #finishTurn(sessionId, data) {
     const draft = this.drafts.get(sessionId)
-    // 不论成败都清空，下一轮重新交卷
     this.drafts.delete(sessionId)
 
-    // reason 可能在 data 里，也可能直接挂在事件上，两种都认
     const reason = (data && data.reason) || data
     const completed = Boolean(reason && reason.kind === TURN_REASON.completed)
     if (!completed) {
@@ -67,34 +62,28 @@ export class Outbound {
       return
     }
 
-    // 这一轮是不是外部消息触发的：没有 pending 就是用户直接聊天，一个字都不发。
-    // takePending 取一次就没，所以一轮只对应一条入站消息。
+    // 这一轮是不是外部消息触发的判断
     const origin = this.cache.takePending(sessionId)
     if (!origin) {
       this.log(`会话 …${sessionId.slice(-8)} 这一轮由界面直接触发，不发到外部`)
       return
     }
 
+      // 模型出站消息的相关信息没填就复用入站消息的信息
     const archiveId = String(origin.archiveId || '')
     const messages = draft.replies.map((r, index) => ({
-      // 模型没填就沿用收到的消息
       chatType: r.chatType || origin.chatType || '',
       chatId: r.chatId || origin.chatId || '',
       text: r.text,
       index,
     }))
 
-    // 先落出站池：推失败也不丢
     this.cache.putOutbound(sessionId, archiveId, messages, origin)
     await this.push(sessionId, archiveId, messages, origin)
   }
 
   /**
    * 把出站池里这个会话的回复推给 Java；按 ack 清缓存。
-   *
-   * @param {object} origin 这一轮在回的那条入站消息 —— Java 靠它决定渠道和目标。
-   *   只带身份字段：assessment / recallBundle / egoDecision 是 Java 算的，
-   *   带回去既没用还会撞上复杂类型反序列化。
    */
   async push(sessionId, archiveId, messages, origin) {
     try {
@@ -125,7 +114,7 @@ export class Outbound {
       this.cache.ackOutbound(sessionId, acked.map((i) => i.index))
       this.log(`推回 Java ${acked.length} 条（存档 ${archiveId}）`)
     } catch (error) {
-      // 推失败留在池里，下一轮重推；不在这里重试，避免重复发送
+      //TODO 推失败留在出站池,但目前没有完成重推逻辑
       this.log('推回 Java 失败（留在缓存待重推）：'
         + String((error && error.message) || error))
     }

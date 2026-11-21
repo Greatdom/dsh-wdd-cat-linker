@@ -1,17 +1,17 @@
 /** 专门管消息入站业务 */
 
 import { API } from '../common/api.js'
-import { shortId } from '../common/session_finder.js'
-import { plainText, summarize } from '../common/media.js'
-import { buildInboundPrompt } from '../utils/prompt_builder.js'
+import { deliver } from '../utils/deliver.js'
 
 /**
- * 入站：Java → DSH。
+ * 入站：cat 服务器 → DSH。
  *
  * 一轮做这些：
- *   1. 按自己报的会话清单去 Java 取；
- *   2. **取到就立刻 ack**
- *   3. 按 sessionId 恢复 DSH 会话并 followup。
+ *   1. 按自己报的会话清单去 cat 服务器取；
+ *   2. **取到就立刻 ack**（拿到就算投递成功，后面会话在不在另说）；
+ *   3. 逐条交给 {@link deliver} 投进 DSH 会话。
+ *
+ * 这里只负责搬运。拼提示词、恢复会话、followup 都在 utils/deliver.js。
  */
 export class Inbound {
   /**
@@ -31,6 +31,9 @@ export class Inbound {
     this.stopped = false
     /** 还记得的可用会话，避免每轮重算。 */
     this.sessionIds = []
+
+    /** deliver 需要的那几样，构造一次复用。 */
+    this.deliverDeps = { finder, cache, log }
   }
 
   /** 让 inbound 知道当前该向哪些会话取。心跳那边算出来就传进来。 */
@@ -72,7 +75,7 @@ export class Inbound {
     for (const message of messages) {
       if (this.stopped) break
       try {
-        await this.#deliver(message)
+        await deliver(this.deliverDeps, message)
       } catch (error) {
         this.log(`投递 ${message && message.channelMessageId} 出错：`
           + String((error && error.message) || error))
@@ -94,53 +97,11 @@ export class Inbound {
 
       for (const message of messages) {
         this.cache.deleteInbound(message)
-      } 
+      }
 
     } catch (error) {
       this.log('ack 失败：' + String((error && error.message) || error))
     }
-  }
-
-  /** 投给一个会话。会话不存在就丢弃。 */
-  async #deliver(message) {
-    const sessionId = String((message && message.sessionId) || '')
-    if (!sessionId) {
-      this.log('消息没有 sessionId，丢弃')
-      return
-    }
-
-    const agent = await this.finder.resumeAgent(sessionId)
-    if (!agent || typeof agent.followup !== 'function') {
-      this.log(`会话 …${shortId(sessionId)} 打不开，丢弃这条消息`)
-      return
-    }
-
-    const text = plainText(message.content)
-    if (!text) {
-      this.log('消息正文为空，跳过')
-      return
-    }
-
-    // 正文的拼装（外部来源标记 + 固定后缀）在 utils/prompt_builder.js ——
-    // 提示词工程归一处，这里只负责搬运。
-    const prompt = buildInboundPrompt(message)
-
-    await agent.followup({
-      // id = 渠道消息号 + 存档号：同一条消息投给多个存档时不会撞。
-      // 它只认识 cat 服务器给的消息号（渠道是 cat 那边的事）。
-      id: `${message.channelMessageId}-${message.archiveId}`,
-      role: 'user',
-      content: [{ type: 'text', text: prompt }],
-      // source.kind 是封闭枚举，只有 user/assistant 这些；
-      // 用 'user' 让界面把它当人话渲染
-      source: { kind: 'user' },
-    })
-
-    // 投进去了才标记：这一轮等着被回复
-    this.cache.markPending(message)
-
-    this.log(`收到 ${message.chatType}:${message.chatId} → 会话 …${shortId(sessionId)}：`
-      + summarize(text))
   }
 
   dispose() {

@@ -116,13 +116,24 @@ export class LocalStore {
   }
 
   /**
-   * 读一项当前值。
+   * 读一项设置，已经校正过。
    *
-   * 给「需要在运行时按最新设置工作」的模块用（比如心跳每轮现读上报条数）。
-   * 返回的是 this.settings 上的实时值：设置页保存后立刻能读到新值，不用重启。
+   * 给「需要在运行时按最新设置工作」的模块用（心跳每轮现读上报条数、
+   * 出站清理每轮现读保留时长）。设置页保存后立刻能读到新值，不用重启。
+   *
+   * 返回值保证落在 SPEC 的区间内：值不合法（NaN、越界、类型不对）时退回 default，
+   * 所以调用方**不需要**再自己 Math.max/Math.min 一遍。
+   *
+   * @param {string} key 设置项名
+   * @returns {*} 校正后的值；键不认识时返回 undefined
    */
   get(key) {
-    return this.settings[key]
+    const spec = SPEC[key]
+    if (!spec) {
+      return undefined
+    }
+    const value = normalize(key, this.settings[key])
+    return value === undefined ? spec.default : value
   }
 
  
@@ -163,17 +174,26 @@ export class LocalStore {
   }
 }
 
-/** 各键的类型与区间。 */
+/**
+ * 各键的类型、区间与默认值。
+ *
+ * 这是配置项的唯一权威定义：
+ *   · 设置页按这里的 min/max 渲染输入框；
+ *   · 保存时按 normalize() 夹到区间内；
+ *   · 运行时用 store.get(key) 读取 —— 也会走同一套夹取，拿不到值就退回 default。
+ *
+ * 所以「怎么校正一个值」只有一处实现（normalize），别处不要再手写 Math.max/Math.min。
+ */
 const SPEC = {
-  enabled: { type: 'bool' },
-  catBaseUrl: { type: 'string' },
-  relayOutbound: { type: 'bool' },
-  relayInbound: { type: 'bool' },
-  heartbeatIntervalMs: { type: 'number', min: 1000, max: 60000 },
-  inboundIntervalMs: { type: 'number', min: 300, max: 30000 },
-  requestTimeoutMs: { type: 'number', min: 1000, max: 60000 },
-  logUploadLimit: { type: 'number', min: 10, max: 200 },
-  outboundFailTtlMs: { type: 'number', min: 5000, max: 600000 },
+  enabled: { type: 'bool', default: true },
+  catBaseUrl: { type: 'string', default: 'http://127.0.0.1:8080' },
+  relayOutbound: { type: 'bool', default: false },
+  relayInbound: { type: 'bool', default: false },
+  heartbeatIntervalMs: { type: 'number', min: 1000, max: 60000, default: 2000 },
+  inboundIntervalMs: { type: 'number', min: 300, max: 30000, default: 2000 },
+  requestTimeoutMs: { type: 'number', min: 1000, max: 60000, default: 7000 },
+  logUploadLimit: { type: 'number', min: 10, max: 200, default: 50 },
+  outboundFailTtlMs: { type: 'number', min: 5000, max: 600000, default: 60000 },
 }
 
 /** 按类型规整 */

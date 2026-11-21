@@ -86,6 +86,8 @@ window.__ModuleLoader__.load({
       { group: '节奏', key: 'heartbeatIntervalMs', label: '心跳间隔（毫秒）', hint: '1000~60000', type: 'number', min: 1000, max: 60000 },
       { key: 'inboundIntervalMs', label: '拉队列间隔（毫秒）', hint: '300~30000', type: 'number', min: 300, max: 30000 },
       { key: 'requestTimeoutMs', label: '请求超时（毫秒）', hint: '1000~60000', type: 'number', min: 1000, max: 60000 },
+
+      { group: '日志', key: 'logUploadLimit', label: '每次上报日志条数', hint: '跟着心跳发给中转站，10~200；改完下一跳生效', type: 'number', min: 10, max: 200 },
     ]
 
     // ── 样式 ────────────────────────────────────────────────

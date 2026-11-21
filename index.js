@@ -23,9 +23,9 @@ import { LinkerLogger } from './src/common/logger.js'
 import {
   HEARTBEAT_INTERVAL_MS,
   INBOUND_INTERVAL_MS,
+  LOG_UPLOAD_LIMIT,
   REQUEST_TIMEOUT_MS,
 } from './src/common/constant.js'
-
 /** 插件名（cordis 用它做去重/卸载标识）。 */
 export const name = 'dsh-wdd-cat-linker'
 
@@ -40,6 +40,8 @@ export const Config = Schema.object({
     .description('轮询待投递队列的间隔（毫秒）'),
   requestTimeoutMs: Schema.number().default(REQUEST_TIMEOUT_MS)
     .description('单次请求超时（毫秒）'),
+  logUploadLimit: Schema.number().default(LOG_UPLOAD_LIMIT)
+    .description('每次心跳上报几条日志给中转站（10~200）'),
   systemPrompt: Schema.string().default('')
     .description('无状态模式下的固定人设；留空则只抹历史、不改系统提示词'),
 })
@@ -94,7 +96,7 @@ export function apply(ctx, config) {
   }
 
   // ── 三个业务件 ────────────────────────────────────────────
-  const heartbeat = new Heartbeat({ bridge, finder, logger, log })
+  const heartbeat = new Heartbeat({ bridge, finder, logger, store, log })
   const inbound = new Inbound({ bridge, finder, cache, log })
   const outbound = new Outbound({ bridge, cache, log })
 

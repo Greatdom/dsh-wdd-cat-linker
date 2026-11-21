@@ -1,4 +1,16 @@
-import { CAPACITY } from '../common/constant.js'
+/**
+ * 跳板自己的日志缓冲。
+ *
+ * 两个数字在这里定死，不对外暴露：
+ *   · CAPACITY —— 缓冲最多留多少条。这是**内存上限**，不是「上报多少」；
+ *     上报多少由设置项 logUploadLimit 决定，运行时读取，所以这里只负责装得下。
+ *
+ * 为什么不做成设置项：缓冲容量属于性能参数，用户调它只会把内存撑大或把历史挤没，
+ * 没有可感知的好处。真正的可调项是「上报几条给 cat 服务器」。
+ */
+
+/** 缓冲最多留多少条。 */
+const CAPACITY = 200
 
 export class LinkerLogger {
   constructor({ sink } = {}) {

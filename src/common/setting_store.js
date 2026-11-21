@@ -38,6 +38,7 @@ export const EDITABLE_KEYS = Object.freeze([
   'heartbeatIntervalMs',
   'inboundIntervalMs',
   'requestTimeoutMs',
+  'logUploadLimit',
 ])
 
 /**
@@ -113,6 +114,16 @@ export class LocalStore {
     return out
   }
 
+  /**
+   * 读一项当前值。
+   *
+   * 给「需要在运行时按最新设置工作」的模块用（比如心跳每轮现读上报条数）。
+   * 返回的是 this.settings 上的实时值：设置页保存后立刻能读到新值，不用重启。
+   */
+  get(key) {
+    return this.settings[key]
+  }
+
  
   save(incoming) {
     if (!incoming || typeof incoming !== 'object') {
@@ -160,6 +171,7 @@ const SPEC = {
   heartbeatIntervalMs: { type: 'number', min: 1000, max: 60000 },
   inboundIntervalMs: { type: 'number', min: 300, max: 30000 },
   requestTimeoutMs: { type: 'number', min: 1000, max: 60000 },
+  logUploadLimit: { type: 'number', min: 10, max: 200 },
 }
 
 /** 按类型规整 */
